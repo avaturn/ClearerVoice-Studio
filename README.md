@@ -103,3 +103,20 @@ Checkout some awesome Github repositories from Speech Lab of Institute for Intel
 ClearerVoice-Studio contains third-party components and code modified from some open-source repos, including: <br>
 [Speechbrain](https://github.com/speechbrain/speechbrain), [ESPnet](https://github.com/espnet), [TalkNet-ASD
 ](https://github.com/TaoRuijie/TalkNet-ASD)
+
+## Running the new model
+
+Download checkpoint from [here](https://huggingface.co/alibabasglab/log_VoxCeleb2_lip_tfgridnet-isam_2spk/) to have `train/target_speaker_extraction/checkpoints/log_VoxCeleb2_lip_tfgridnet-isam_2spk/` and create `last_best_checkpoint` file in that dir with this line: 'last_best_checkpoint.pt'.
+
+Then run as usual:
+
+```python
+from clearvoice import ClearVoice
+model_runner = ClearVoice(task='target_speaker_extraction', model_names=['AV_TFGridNet_ISAM_TSE_16K'])
+
+model_runner(
+    input_path="./inputs",
+    online_write=True,
+    output_path="./outputs",
+)
+```
