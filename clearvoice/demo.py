@@ -114,3 +114,14 @@ if False:
 
     #2nd calling method: process video files listed in .scp file, and write outputs to 'path_to_output_videos_tse_scp/'
     myClearVoice(input_path='samples/scp/video_samples.scp', online_write=True, output_path='samples/path_to_output_videos_tse_scp')
+
+##-----Demo Eight: use AV_TFGridNet_ISAM_TSE_16K model for audio-visual target speaker extraction with 2 speakers ------
+if False:
+    myClearVoice = ClearVoice(task='target_speaker_extraction', model_names=['AV_TFGridNet_ISAM_TSE_16K'])
+
+    #1st calling method: process all video files with 2 speakers in 'path_to_input_videos_2spk/' and write outputs to 'path_to_output_videos_tse_tfgridnet'
+    # Note: Input videos must contain exactly 2 speakers for this model
+    myClearVoice(input_path='samples/path_to_input_videos_2spk', online_write=True, output_path='samples/path_to_output_videos_tse_tfgridnet')
+
+    #2nd calling method: process video files listed in .scp file, and write outputs to 'path_to_output_videos_tse_tfgridnet_scp/'
+    myClearVoice(input_path='samples/scp/video_samples_2spk.scp', online_write=True, output_path='samples/path_to_output_videos_tse_tfgridnet_scp')

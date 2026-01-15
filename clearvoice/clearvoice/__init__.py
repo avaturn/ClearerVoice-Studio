@@ -15,21 +15,22 @@ class ClearVoice:
     """
     def __init__(self, task, model_names):
         """ Load the desired models for the specified task. Perform all the given models and return all results.
-   
+
         Parameters:
         ----------
         task: str
-            the task matching any of the provided tasks: 
+            the task matching any of the provided tasks:
             'speech_enhancement'
             'speech_separation'
             'target_speaker_extraction'
         model_names: str or list of str
-            the model names matching any of the provided models: 
+            the model names matching any of the provided models:
             'FRCRN_SE_16K'
             'MossFormer2_SE_48K'
             'MossFormerGAN_SE_16K'
             'MossFormer2_SS_16K'
             'AV_MossFormer2_TSE_16K'
+            'AV_TFGridNet_ISAM_TSE_16K' (requires videos with 2 speakers)
 
         Returns:
         --------

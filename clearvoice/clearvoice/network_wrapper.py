@@ -158,8 +158,10 @@ class network_wrapper(nn.Module):
         parser.add_argument('--num-gpu', dest='num_gpu', type=int, default=1, help='Number of GPUs to use')
 
         # Model-specific settings for target speaker extraction
-        parser.add_argument('--network', type=str, help='Select TSE models(currently supports AV_MossFormer2_TSE_16K)')
+        parser.add_argument('--network', type=str, help='Select TSE models(currently supports AV_MossFormer2_TSE_16K, AV_TFGridNet_ISAM_TSE_16K)')
         parser.add_argument('--sampling-rate', dest='sampling_rate', type=int, default=16000, help='Sampling rate (currently supports 16 kHz)')
+        parser.add_argument('--speaker-no', dest='speaker_no', type=int, default=2, help='Number of speakers (for multi-speaker models like TFGridNet)')
+        parser.add_argument('--causal', type=int, default=0, help='Causal mode (1=True, 0=False)')
         parser.add_argument('--network_reference', type=dict, help='a dictionary that contains the parameters of auxilary reference signal')
         parser.add_argument('--network_audio', type=dict, help='a dictionary that contains the network parameters')
 
@@ -224,9 +226,12 @@ class network_wrapper(nn.Module):
         elif self.args.network == 'AV_MossFormer2_TSE_16K':
             from .networks import CLS_AV_MossFormer2_TSE_16K
             self.network = CLS_AV_MossFormer2_TSE_16K(self.args)  # Load AV MossFormer2 model for target speaker extraction
+        elif self.args.network == 'AV_TFGridNet_ISAM_TSE_16K':
+            from .networks import CLS_AV_TFGridNet_ISAM_TSE_16K
+            self.network = CLS_AV_TFGridNet_ISAM_TSE_16K(self.args)  # Load AV TFGridNet-ISAM model for 2-speaker target speaker extraction
         else:
             # Print error message if no matching network is found
             print("No network found!")
             return
-        
+
         return self.network  # Return the instantiated network model

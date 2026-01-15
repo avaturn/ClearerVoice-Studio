@@ -589,10 +589,10 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
             tmp_audio = audio[:, current_idx:current_idx + window]  # Select current audio segment
 
             current_idx_v = int(current_idx/args.sampling_rate*25)  # Select current video segment index
-            tmp_video = visual[:, current_idx_v:current_idx_v + window_v, :, :] # Select current video segment
+            tmp_video = visual[..., current_idx_v:current_idx_v + window_v, :, :] # Select current video segment
             
             tmp_output = model(tmp_audio, tmp_video).detach().squeeze().cpu().numpy()  # Apply model to the segment
-            
+
             # For the first segment, use the whole segment minus the give-up length
             if current_idx == 0:
                 outputs[current_idx:current_idx + window - give_up_length] = tmp_output[:-give_up_length]
@@ -604,7 +604,7 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
 
         # Process the last window of audio
         tmp_audio = audio[:, -window:]
-        tmp_video = visual[:, -window_v:, :, :]
+        tmp_video = visual[..., -window_v:, :, :]
         tmp_output = model(tmp_audio, tmp_video).detach().squeeze().cpu().numpy()  # Apply model to the segment
         outputs[-window + give_up_length:] = tmp_output[give_up_length:]
     else:

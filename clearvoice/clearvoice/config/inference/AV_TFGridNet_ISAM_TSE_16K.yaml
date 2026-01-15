@@ -1,0 +1,44 @@
+#!/bin/bash
+mode: 'inference'
+use_cuda: 1 # 1 for True, 0 for False
+num_gpu: 1
+sampling_rate: 16000
+network: "AV_TFGridNet_ISAM_TSE_16K"  # network type
+checkpoint_dir: "/home/ubuntu/ClearerVoice-Studio/train/target_speaker_extraction/checkpoints/log_VoxCeleb2_lip_tfgridnet-isam_2spk"
+
+input_path: "scp/video_samples_2spk.scp"  # an input dir or input scp file (must contain videos with 2 speakers)
+output_dir: "path_to_output_videos_tse_tfgridnet" # output dir to store processed audio
+
+# decode parameters
+one_time_decode_length: 3 # maximum segment length for one-pass decoding (seconds), longer audio (>5s) will use segmented decoding
+decode_window: 3 # one-pass decoding length
+
+# number of speakers
+speaker_no: 2  # This model requires exactly 2 speakers
+
+# Model-specific settings for target speaker extraction
+network_reference:
+  cue: lip
+  backbone: resnet18
+  emb_size: 256
+
+# Audio network parameters (TFGridNet-ISAM)
+network_audio:
+  backbone: av_tfgridnet_isam
+  n_fft: 256
+  stride: 128
+  window: "hann"
+  use_builtin_complex: False
+  n_srcs: 1
+  n_imics: 1
+  n_layers: 6
+  lstm_hidden_units: 192
+  attn_n_head: 4
+  attn_qk_output_channel: 4
+  emb_dim: 48
+  emb_ks: 4
+  emb_hs: 1
+  activation: "prelu"
+  # ISAM (Inter-Speaker Attention Module) settings
+  isam: 1
+  spk_att_dropout: 1  # 0 for always use speaker attention, 1 for dropout during training

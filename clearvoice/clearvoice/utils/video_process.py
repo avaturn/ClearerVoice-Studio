@@ -269,6 +269,7 @@ def crop_video(video_args, track, cropFile):
 
 
 def evaluate_network(files, video_args, args):
+	# files: ['face1.avi', 'face2.avi']
 
 	est_sources = []
 	for file in tqdm.tqdm(files, total = len(files)):
@@ -296,9 +297,39 @@ def evaluate_network(files, video_args, args):
 		if visual.shape[0] < length:
 			visual = np.pad(visual, ((0,int(length - visual.shape[0])),(0,0),(0,0)), mode = 'edge')
 
+		visual = np.expand_dims(visual, axis=0) # [1, T, 112, 112]
+
+		if args.network == "AV_TFGridNet_ISAM_TSE_16K":
+			# Load the other video and concatenate it to 'visual'
+			# TODO: make video loading a separate function
+			fileName = os.path.splitext(file.split(os.path.sep)[-1])[0] # Load audio and video
+
+			video = cv2.VideoCapture(os.path.join(video_args.pycropPath, fileName + '.avi'))
+			videoFeature = []
+			while video.isOpened():
+				ret, frames = video.read()
+				if ret == True:
+					face = cv2.cvtColor(frames, cv2.COLOR_BGR2GRAY)
+					face = cv2.resize(face, (224,224))
+					face = face[int(112-(112/2)):int(112+(112/2)), int(112-(112/2)):int(112+(112/2))]
+					videoFeature.append(face)
+				else:
+					break
+
+			video.release()
+			videoFeature = np.array(videoFeature)/255.0
+			videoFeature = (videoFeature - 0.4161)/0.1688
+
+			length = int(audio.shape[0]/16000*25)
+			if videoFeature.shape[0] < length:
+				videoFeature = np.pad(videoFeature, ((0,int(length - videoFeature.shape[0])),(0,0),(0,0)), mode = 'edge')
+
+			videoFeature = np.expand_dims(videoFeature, axis=0)
+
+			visual = np.concatenate([visual, videoFeature])[None] # [1, 2, T, 112, 112]
+
 		audio /= np.max(np.abs(audio))
 		audio = np.expand_dims(audio, axis=0)
-		visual = np.expand_dims(visual, axis=0)
 
 		inputs = (audio, visual)
 		est_source = decode_one_audio_AV_MossFormer2_TSE_16K(video_args.model, inputs, args)

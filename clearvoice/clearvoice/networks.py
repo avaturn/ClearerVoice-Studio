@@ -116,6 +116,7 @@ class SpeechModel:
             os.makedirs(checkpoint_dir)
         print(f'downloading checkpoint for {model_name}')
         try:
+            # TODO: fix wrong repo_id for AV_TFGridNet_ISAM_TSE_16K, have to download manually now
             snapshot_download(repo_id=f'alibabasglab/{model_name}', local_dir=checkpoint_dir)
             return True
         except:
@@ -608,10 +609,10 @@ class CLS_MossFormer2_SS_16K(SpeechModel):
 
 class CLS_AV_MossFormer2_TSE_16K(SpeechModel):
     """
-    A subclass of SpeechModel that implements an audio-visual (AV) model using 
-    the AV-MossFormer2 architecture for target speaker extraction (TSE) at 16 kHz. 
+    A subclass of SpeechModel that implements an audio-visual (AV) model using
+    the AV-MossFormer2 architecture for target speaker extraction (TSE) at 16 kHz.
     This model leverages both audio and visual cues to perform speaker extraction.
-    
+
     Args:
         args (Namespace): The argument parser containing model configurations and paths.
     """
@@ -619,21 +620,58 @@ class CLS_AV_MossFormer2_TSE_16K(SpeechModel):
     def __init__(self, args):
         # Initialize the parent SpeechModel class
         super(CLS_AV_MossFormer2_TSE_16K, self).__init__(args)
-        
+
         # Import the AV-MossFormer2 model for 16 kHz target speech enhancement
         from .models.av_mossformer2_tse.av_mossformer2 import AV_MossFormer2_TSE_16K
-        
+
         # Initialize the model
         self.model = AV_MossFormer2_TSE_16K(args).model
         self.name = 'AV_MossFormer2_TSE_16K'
-        
+
         # Load pre-trained model checkpoint
         self.load_model()
-        
+
         # Move model to the appropriate device (GPU/CPU)
         if args.use_cuda == 1:
             self.model.to(self.device)
-        
+
+        # Set the model to evaluation mode (no gradient calculation)
+        self.model.eval()
+
+
+class CLS_AV_TFGridNet_ISAM_TSE_16K(SpeechModel):
+    """
+    A subclass of SpeechModel that implements an audio-visual (AV) model using
+    the TFGridNet with ISAM (Inter-Speaker Attention Module) architecture for
+    target speaker extraction (TSE) at 16 kHz. This model processes videos of
+    2 speakers simultaneously and separates their voices using both audio and
+    visual cues.
+
+    Args:
+        args (Namespace): The argument parser containing model configurations and paths.
+    """
+
+    def __init__(self, args):
+        # Initialize the parent SpeechModel class
+        super(CLS_AV_TFGridNet_ISAM_TSE_16K, self).__init__(args)
+
+        # Import the AV-TFGridNet-ISAM model for 16 kHz target speech enhancement
+        from .models.av_tfgridnet_isam_tse.av_tfgridnet_isam import AV_TFGridNet_ISAM_TSE_16K
+
+        # Set device before initializing the model
+        args.device = self.device
+
+        # Initialize the model
+        self.model = AV_TFGridNet_ISAM_TSE_16K(args)
+        self.name = 'AV_TFGridNet_ISAM_TSE_16K'
+
+        # Load pre-trained model checkpoint
+        self.load_model()
+
+        # Move model to the appropriate device (GPU/CPU)
+        if args.use_cuda == 1:
+            self.model.to(self.device)
+
         # Set the model to evaluation mode (no gradient calculation)
         self.model.eval()
 
