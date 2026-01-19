@@ -301,9 +301,12 @@ def evaluate_network(files, video_args, args):
 
 		if args.network == "AV_TFGridNet_ISAM_TSE_16K":
 			# Load the other video and concatenate it to 'visual'
-			# TODO: make video loading a separate function
+			if len(files) != 2:
+				print(f"Warning: there are {len(files)} face tracks for {file}")
+			file = (set(files) - set([file])).pop()
 			fileName = os.path.splitext(file.split(os.path.sep)[-1])[0] # Load audio and video
 
+			# TODO: make video loading a separate function
 			video = cv2.VideoCapture(os.path.join(video_args.pycropPath, fileName + '.avi'))
 			videoFeature = []
 			while video.isOpened():
