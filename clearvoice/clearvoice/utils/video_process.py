@@ -19,6 +19,7 @@ from ..models.av_mossformer2_tse.faceDetector.s3fd import S3FD
 
 from .decode import decode_one_audio_AV_MossFormer2_TSE_16K
 
+import time
 
 
 def process_tse(args, model, device, data_reader, output_wave_dir):
@@ -67,16 +68,16 @@ def main(video_args, args):
     os.makedirs(video_args.pycropPath, exist_ok = True) # Save the detected face clips (audio+video) in this process
 
     # Extract video
-    video_args.videoFilePath = os.path.join(video_args.pyaviPath, 'video.avi')
-    # If duration did not set, extract the whole video, otherwise extract the video from 'video_args.start' to 'video_args.start + video_args.duration'
-    if video_args.duration == 0:
-        command = ("ffmpeg -y -i %s -qscale:v 2 -threads %d -async 1 -r 25 %s -loglevel panic" % \
-            (video_args.videoPath, video_args.nDataLoaderThread, video_args.videoFilePath))
-    else:
-        command = ("ffmpeg -y -i %s -qscale:v 2 -threads %d -ss %.3f -to %.3f -async 1 -r 25 %s -loglevel panic" % \
-            (video_args.videoPath, video_args.nDataLoaderThread, video_args.start, video_args.start + video_args.duration, video_args.videoFilePath))
-    subprocess.call(command, shell=True, stdout=None)
-    sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the video and save in %s \r\n" %(video_args.videoFilePath))
+    video_args.videoFilePath = video_args.videoPath # os.path.join(video_args.pyaviPath, 'video.avi')
+    # # If duration did not set, extract the whole video, otherwise extract the video from 'video_args.start' to 'video_args.start + video_args.duration'
+    # if video_args.duration == 0:
+    #     command = ("ffmpeg -y -i %s -qscale:v 2 -threads %d -async 1 -r 25 %s -loglevel panic" % \
+    #         (video_args.videoPath, video_args.nDataLoaderThread, video_args.videoFilePath))
+    # else:
+    #     command = ("ffmpeg -y -i %s -qscale:v 2 -threads %d -ss %.3f -to %.3f -async 1 -r 25 %s -loglevel panic" % \
+    #         (video_args.videoPath, video_args.nDataLoaderThread, video_args.start, video_args.start + video_args.duration, video_args.videoFilePath))
+    # subprocess.call(command, shell=True, stdout=None)
+    # sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the video and save in %s \r\n" %(video_args.videoFilePath))
 
     # Extract audio
     video_args.audioFilePath = os.path.join(video_args.pyaviPath, 'audio.wav')
@@ -86,44 +87,54 @@ def main(video_args, args):
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the audio and save in %s \r\n" %(video_args.audioFilePath))
 
     # Extract the video frames
+    t1 = time.time()
     command = ("ffmpeg -y -i %s -qscale:v 2 -threads %d -f image2 %s -loglevel panic" % \
         (video_args.videoFilePath, video_args.nDataLoaderThread, os.path.join(video_args.pyframesPath, '%06d.jpg'))) 
     subprocess.call(command, shell=True, stdout=None)
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the frames and save in %s \r\n" %(video_args.pyframesPath))
+    num_frames = len(glob.glob(os.path.join(video_args.pyframesPath, '*.jpg')))
+    print(f'{time.time() - t1} seconds: image unpacking ({num_frames} frames)')
 
     # Scene detection for the video frames
+    t1 = time.time()
     scene = scene_detect(video_args)
+    # scene = [(FrameTimecode(0, fps=25.0), FrameTimecode(num_frames - 1, fps=25.0))]
+    print(f'{time.time() - t1} seconds: scene detection')
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Scene detection and save in %s \r\n" %(video_args.pyworkPath))	
 
     # Face detection for the video frames
+    t1 = time.time()
     faces = inference_video(video_args)
+    print(f'{time.time() - t1} seconds: face detection')
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" %(video_args.pyworkPath))
 
     # Face tracking
     allTracks, vidTracks = [], []
     for shot in scene:
         if shot[1].frame_num - shot[0].frame_num >= video_args.minTrack: # Discard the shot frames less than minTrack frames
-            allTracks.extend(track_shot(video_args, faces[shot[0].frame_num:shot[1].frame_num])) # 'frames' to present this tracks' timestep, 'bbox' presents the location of the faces
+            allTracks.extend(track_shot_theskindeep(video_args, faces[shot[0].frame_num:shot[1].frame_num], shot[0].frame_num)) # 'frames' to present this tracks' timestep, 'bbox' presents the location of the faces
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" %len(allTracks))
 
     # Face clips cropping
+    t1 = time.time()
     for ii, track in tqdm.tqdm(enumerate(allTracks), total = len(allTracks)):
         vidTracks.append(crop_video(video_args, track, os.path.join(video_args.pycropPath, '%05d'%ii)))
     savePath = os.path.join(video_args.pyworkPath, 'tracks.pckl')
     with open(savePath, 'wb') as fil:
         pickle.dump(vidTracks, fil)
+    print(f'{time.time() - t1} seconds: cropping')
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face Crop and saved in %s tracks \r\n" %video_args.pycropPath)
-    fil = open(savePath, 'rb')
-    vidTracks = pickle.load(fil)
-    fil.close()
 
     # AVSE
     files = glob.glob("%s/*.avi"%video_args.pycropPath)
     files.sort()
 
+    @@ doesn't work correctly (?) if there are several scenes
     est_sources = evaluate_network(files, video_args, args)
 
+    t1 = time.time()
     visualization(vidTracks, est_sources, video_args)	
+    print(f'{time.time() - t1} seconds: cropping')
 
     # combine files in pycrop
     for idx, file in enumerate(files):
@@ -196,9 +207,25 @@ def bb_intersection_over_union(boxA, boxB, evalCol = False):
 		iou = interArea / float(boxAArea + boxBArea - interArea)
 	return iou
 
+def track_shot_theskindeep(video_args, sceneFaces, first_frame_idx):
+	tracks = track_shot(video_args, sceneFaces)
+
+	# add dummy tracks if it's an erroneous scene (e.g. titles)
+	while len(tracks) < 2:
+		tracks.append({
+			'frame': np.int64([first_frame_idx + i for i in range(len(sceneFaces))]),
+			'bbox': np.float32([[1280/2-200, 720/2-200, 1280/2+200, 720/2+200]] * len(sceneFaces)),
+		})
+
+	# retain the leftmost and the rightmost
+	tracks.sort(key=lambda track: track['bbox'][:, (0,2)].mean()) # sort by x-center
+	tracks = [tracks[0], tracks[-1]]
+
+	return tracks
+
 def track_shot(video_args, sceneFaces):
 	# CPU: Face tracking
-	iouThres  = 0.5     # Minimum IOU between consecutive face detections
+	iouThres  = 0.25     # Minimum IOU between consecutive face detections
 	tracks    = []
 	while True:
 		track     = []
@@ -210,6 +237,7 @@ def track_shot(video_args, sceneFaces):
 				elif face['frame'] - track[-1]['frame'] <= video_args.numFailedDet:
 					iou = bb_intersection_over_union(face['bbox'], track[-1]['bbox'])
 					if iou > iouThres:
+						# found the face in this frame that will continue the track
 						track.append(face)
 						frameFaces.remove(face)
 						continue
@@ -228,6 +256,7 @@ def track_shot(video_args, sceneFaces):
 			bboxesI  = np.stack(bboxesI, axis=1)
 			if max(np.mean(bboxesI[:,2]-bboxesI[:,0]), np.mean(bboxesI[:,3]-bboxesI[:,1])) > video_args.minFaceSize:
 				tracks.append({'frame':frameI,'bbox':bboxesI})
+
 	return tracks
 
 def crop_video(video_args, track, cropFile):
@@ -277,6 +306,7 @@ def evaluate_network(files, video_args, args):
 		fileName = os.path.splitext(file.split(os.path.sep)[-1])[0] # Load audio and video
 		audio, _ = sf.read(os.path.join(video_args.pycropPath, fileName + '.wav'), dtype='float32')
 
+		t1 = time.time()
 		video = cv2.VideoCapture(os.path.join(video_args.pycropPath, fileName + '.avi'))
 		videoFeature = []
 		while video.isOpened():
@@ -298,6 +328,7 @@ def evaluate_network(files, video_args, args):
 			visual = np.pad(visual, ((0,int(length - visual.shape[0])),(0,0),(0,0)), mode = 'edge')
 
 		visual = np.expand_dims(visual, axis=0) # [1, T, 112, 112]
+		print(time.time() - t1, 'seconds: read one face video')
 
 		if args.network == "AV_TFGridNet_ISAM_TSE_16K":
 			# Load the other video and concatenate it to 'visual'
@@ -346,7 +377,7 @@ def visualization(tracks, est_sources, video_args):
 	flist = glob.glob(os.path.join(video_args.pyframesPath, '*.jpg'))
 	flist.sort()
 	
-
+	@@ doesn't save different scenes in different files
 	for idx, audio in enumerate(est_sources):
 		max_value = np.max(np.abs(audio))
 		if max_value >1:
@@ -381,15 +412,15 @@ def visualization(tracks, est_sources, video_args):
 					os.path.join(video_args.pyaviPath, 'video_out_%s.avi' % tidx),
 					os.path.join(video_args.pyaviPath, 'video_est_%s.mp4' % tidx)
 				)
-		command += f"rm {os.path.join(video_args.pyaviPath, 'video_out_%s.avi' % tidx)}"
+		# command += f"rm {os.path.join(video_args.pyaviPath, 'video_out_%s.avi' % tidx)}"
 		output = subprocess.call(command, shell=True, stdout=None)
 
 
-	command = "ffmpeg -i %s %s ;" % (
-				os.path.join(video_args.pyaviPath, 'video.avi'),
-				os.path.join(video_args.pyaviPath, 'video_orig.mp4')
-			)
-	command += f"rm {os.path.join(video_args.pyaviPath, 'video_only.avi')} ;"
-	command += f"rm {os.path.join(video_args.pyaviPath, 'video.avi')} ;"
+	# command = "ffmpeg -i %s %s ;" % (
+	# 			os.path.join(video_args.pyaviPath, 'video.avi'),
+	# 			os.path.join(video_args.pyaviPath, 'video_orig.mp4')
+	# 		)
+	# command += f"rm {os.path.join(video_args.pyaviPath, 'video_only.avi')} ;"
+	# command += f"rm {os.path.join(video_args.pyaviPath, 'video.avi')} ;"
 	command += f"rm {os.path.join(video_args.pyaviPath, 'audio.wav')} ;"
 	output = subprocess.call(command, shell=True, stdout=None)

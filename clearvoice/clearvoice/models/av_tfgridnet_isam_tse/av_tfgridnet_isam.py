@@ -39,9 +39,9 @@ class AV_TFGridNet_ISAM_TSE_16K(nn.Module):
         Returns:
             est_source: [B, speaker_no, T], separated source for each speaker
         """
-        print('actual AV_TFGridNet_ISAM_TSE_16K forward')
-        print('mixture:', mixture.shape)
-        print('visual:', visual.shape)
+        # print('actual AV_TFGridNet_ISAM_TSE_16K forward')
+        # print('mixture:', mixture.shape)
+        # print('visual:', visual.shape)
         # Process visual input through encoder
         # visual shape: [B, speaker_no, frames, 112, 112]
         visual = visual.to(self.args.device)

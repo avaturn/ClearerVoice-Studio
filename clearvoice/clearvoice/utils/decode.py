@@ -572,11 +572,12 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
     audio = torch.from_numpy(np.float32(audio)).to(args.device)
     visual = torch.from_numpy(np.float32(visual)).to(args.device)
 
-    print(audio.shape)
-    print(visual.shape)
+    print('decode.py full audio:', audio.shape)
+    print('decode.py full visual:', visual.shape)
 
     if decode_do_segement:
         print('********')
+        import time; t1 = time.time()
         outputs = np.zeros(t)  # Initialize output array
         window = args.sampling_rate * args.decode_window  # Window length for processing
         window_v = 25 * args.decode_window
@@ -607,6 +608,7 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
         tmp_video = visual[..., -window_v:, :, :]
         tmp_output = model(tmp_audio, tmp_video).detach().squeeze().cpu().numpy()  # Apply model to the segment
         outputs[-window + give_up_length:] = tmp_output[give_up_length:]
+        print(f'{time.time() - t1} seconds: separation forward (audio size {t / args.sampling_rate} sec, ~{(t - (window - stride)) // stride} windows)')
     else:
         # Process the entire input at once if segmentation is not needed
         outputs = model(audio, visual).detach().squeeze().cpu().numpy()
