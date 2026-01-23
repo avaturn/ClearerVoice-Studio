@@ -65,12 +65,12 @@ def args_param():
     parser = argparse.ArgumentParser()
     parser.add_argument('--nDataLoaderThread',     type=int,   default=10,   help='Number of workers')
     parser.add_argument('--facedetScale',          type=float, default=0.25, help='Scale factor for face detection, the frames will be scale to 0.25 orig')
-    parser.add_argument('--minTrack',              type=int,   default=50,   help='Number of min frames for each shot')
-    parser.add_argument('--numFailedDet',          type=int,   default=10,   help='Number of missed detections allowed before tracking is stopped')
+    parser.add_argument('--minTrack',              type=int,   default=0,    help='Number of min frames for each shot')
+    parser.add_argument('--numFailedDet',          type=int,   default=10**6,help='Number of missed detections allowed before tracking is stopped')
     parser.add_argument('--minFaceSize',           type=int,   default=1,    help='Minimum face size in pixels')
     parser.add_argument('--cropScale',             type=float, default=0.40, help='Scale bounding box')
-    parser.add_argument('--start',                 type=int, default=0,   help='The start time of the video')
-    parser.add_argument('--duration',              type=int, default=0,  help='The duration of the video, when set as 0, will extract the whole video')
+    parser.add_argument('--start',                 type=int, default=0,      help='The start time of the video')
+    parser.add_argument('--duration',              type=int, default=0,      help='The duration of the video, when set as 0, will extract the whole video')
     video_args = parser.parse_args()
     return video_args
 
@@ -103,8 +103,12 @@ def main(video_args, args):
     command = ("ffmpeg -y -hide_banner -i %s -qscale:a 0 -ac 1 -vn -threads %d -ar 16000 %s -loglevel warning" % \
         (video_args.videoFilePath, video_args.nDataLoaderThread, video_args.audioFilePath))
     subprocess.call(command, shell=True, stdout=None)
+
+    # Load audio into memory
+    _, full_audio = wavfile.read(video_args.audioFilePath)
+
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the audio and save in %s \r\n" % (video_args.audioFilePath))
-    print(f'{time.time() - t1} seconds: audio extraction')
+    print(f'{time.time() - t1} seconds: audio extraction and loading')
 
     # Scene detection for the video frames
     t1 = time.time()
@@ -129,7 +133,7 @@ def main(video_args, args):
     # Face clips cropping - returns tensors in memory
     t1 = time.time()
     for ii, track in tqdm.tqdm(enumerate(allTracks), total=len(allTracks)):
-        vidTracks.append(crop_video(video_args, track, decoder, ii))
+        vidTracks.append(crop_video(video_args, track, decoder, full_audio, ii))
     savePath = os.path.join(video_args.pyworkPath, 'tracks.pckl')
     with open(savePath, 'wb') as fil:
         pickle.dump(vidTracks, fil)
@@ -158,15 +162,13 @@ def main(video_args, args):
         encoder.to_file(orig_path)
 
         # Combine with estimated audio
-        est_audio_path = os.path.join(video_args.pycropPath, f'est_{idx}.wav')
-        est_video_path = os.path.join(video_args.pycropPath, f'est_{idx}.mp4')
+        est_audio_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.wav')
+        est_video_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.mp4')
         command = f"ffmpeg -y -hide_banner -i {orig_path} -i {est_audio_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {est_video_path} -loglevel warning"
         subprocess.call(command, shell=True, stdout=None)
 
         # Clean up temporary files
         os.remove(orig_path)
-        if os.path.exists(track['audio_path']):
-            os.remove(track['audio_path'])
 
     print(f'{time.time() - t1} seconds: saving output videos')
 
@@ -210,7 +212,7 @@ def detect_faces(video_args, decoder, batch_size=32):
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=1, #video_args.nDataLoaderThread,
+        num_workers=video_args.nDataLoaderThread,
         pin_memory=True
     )
 
@@ -238,7 +240,7 @@ def detect_faces(video_args, decoder, batch_size=32):
 
         if batch_idx % 10 == 0:
             processed = min((batch_idx + 1) * batch_size, num_frames)
-            sys.stderr.write('%s-%05d/%05d\r' % (video_args.videoFilePath, processed, num_frames))
+            print('%s-%05d/%05d' % (video_args.videoFilePath, processed, num_frames))
         # t0 = time.time()
 
     sys.stderr.write('\n')
@@ -325,7 +327,8 @@ def track_shot(video_args, sceneFaces):
 
     return tracks
 
-def crop_video(video_args, track, decoder, crop_idx):
+def crop_video(video_args, track, decoder, full_audio, crop_idx):
+    t0 = time.time()
     # CPU: crop the face clips and return as RGB tensors [n_frames, 3, 224, 224]
     dets = {'x':[], 'y':[], 's':[]}
     for det in track['bbox']: # Read the tracks
@@ -359,26 +362,29 @@ def crop_video(video_args, track, decoder, crop_idx):
     cropped_frames = np.stack(cropped_frames, axis=0)  # [n_frames, 224, 224, 3]
     cropped_frames_tensor = torch.from_numpy(cropped_frames).permute(0, 3, 1, 2)  # [n_frames, 3, 224, 224]
 
-    # Extract audio segment
-    audioStart  = (track['frame'][0]) / 25
-    audioEnd    = (track['frame'][-1]+1) / 25
-    audioTmp    = os.path.join(video_args.pycropPath, f'{crop_idx:05d}.wav')
-    command = ("ffmpeg -y -hide_banner -i %s -async 1 -ac 1 -vn -acodec pcm_s16le -ar 16000 -threads %d -ss %.3f -to %.3f %s -loglevel warning" % \
-              (video_args.audioFilePath, video_args.nDataLoaderThread, audioStart, audioEnd, audioTmp))
-    output = subprocess.call(command, shell=True, stdout=None) # Crop audio file
-    _, audio = wavfile.read(audioTmp)
+    print(f'{time.time() - t0} seconds: everything else in crop_video')
+    t0 = time.time()
+
+    # Extract audio segment by slicing the full audio array
+    # Video is at 25 fps, audio is at 16000 Hz
+    audio_sample_rate = 16000
+    video_fps = 25
+    start_sample = int((track['frame'][0] / video_fps) * audio_sample_rate)
+    end_sample = int(((track['frame'][-1] + 1) / video_fps) * audio_sample_rate)
+    audio = full_audio[start_sample:end_sample]
+
+    print(f'{time.time() - t0} seconds: audio slicing in crop_video')
 
     return {
         'track': track,
         'proc_track': dets,
         'video_tensor': cropped_frames_tensor,  # [n_frames, 3, 224, 224], uint8, RGB
-        'audio': audio,
-        'audio_path': audioTmp
+        'audio': audio
     }
 
 
 def evaluate_network(vidTracks, video_args, args):
-    # vidTracks: list of dicts with 'video_tensor', 'audio', 'audio_path', etc.
+    # vidTracks: list of dicts with 'video_tensor', 'audio', 'track', 'proc_track'
 
     # this architecture only accepts paired videos
     if args.network == "AV_TFGridNet_ISAM_TSE_16K":
