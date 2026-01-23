@@ -149,28 +149,33 @@ def main(video_args, args):
     for idx, audio in enumerate(est_sources):
         max_value = np.max(np.abs(audio))
         if max_value > 1:
-            audio = audio / max_value
-        sf.write(video_args.pycropPath + '/est_%s.wav' % idx, audio, 16000)
+            audio /= max_value
+        # sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
 
-    # Save cropped face videos to disk using torchcodec
-    t1 = time.time()
-    for idx, track in enumerate(vidTracks):
-        video_tensor = track['video_tensor']  # [n_frames, 3, 224, 224], uint8
-        # torchcodec expects uint8 tensor
-        encoder = torchcodec.encoders.VideoEncoder(video_tensor, frame_rate=25.0)
-        orig_path = os.path.join(video_args.pycropPath, f'orig_{idx}.mp4')
-        encoder.to_file(orig_path)
+    audio_left = np.concatenate(est_sources[::2])
+    audio_right = np.concatenate(est_sources[1::2])
+    sf.write(video_args.savePath + f"/audio_left.wav", audio_left, 16000)
+    sf.write(video_args.savePath + f"/audio_right.wav", audio_right, 16000)
 
-        # Combine with estimated audio
-        est_audio_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.wav')
-        est_video_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.mp4')
-        command = f"ffmpeg -y -hide_banner -i {orig_path} -i {est_audio_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {est_video_path} -loglevel warning"
-        subprocess.call(command, shell=True, stdout=None)
+    # # Save cropped face videos to disk using torchcodec
+    # t1 = time.time()
+    # for idx, track in enumerate(vidTracks):
+    #     video_tensor = track['video_tensor']  # [n_frames, 3, 224, 224], uint8
+    #     # torchcodec expects uint8 tensor
+    #     encoder = torchcodec.encoders.VideoEncoder(video_tensor, frame_rate=25.0)
+    #     orig_path = os.path.join(video_args.pycropPath, f'orig_{idx}.mp4')
+    #     encoder.to_file(orig_path)
 
-        # Clean up temporary files
-        os.remove(orig_path)
+    #     # Combine with estimated audio
+    #     est_audio_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.wav')
+    #     est_video_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.mp4')
+    #     command = f"ffmpeg -y -hide_banner -i {orig_path} -i {est_audio_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {est_video_path} -loglevel warning"
+    #     subprocess.call(command, shell=True, stdout=None)
 
-    print(f'{time.time() - t1} seconds: saving output videos')
+    #     # Clean up temporary files
+    #     os.remove(orig_path)
+
+    # print(f'{time.time() - t1} seconds: saving output videos')
 
     # Visualization (optional)
     t1 = time.time()
