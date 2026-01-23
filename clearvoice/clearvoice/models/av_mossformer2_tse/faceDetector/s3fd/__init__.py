@@ -70,65 +70,73 @@ class S3FD():
 
         return bboxes
 
-    def detect_faces_torch(self, image, conf_th=0.8, scales=[1]):
+    def detect_faces_batch(self, images, conf_th=0.8, scales=[1]):
         """
-        Detect faces using RGB torch.Tensor input.
+        Detect faces using batched RGB torch.Tensor input.
 
         Args:
-            image: RGB torch.Tensor of shape [3, H, W], uint8
+            images: RGB torch.Tensor of shape [B, C, H, W], uint8
             conf_th: Confidence threshold
             scales: List of scales for multi-scale detection
 
         Returns:
-            bboxes: numpy array of shape [N, 5] with [x1, y1, x2, y2, score]
+            batch_bboxes: list of numpy arrays, each of shape [N_i, 5] with [x1, y1, x2, y2, score]
         """
         global img_mean_torch
         if img_mean_torch is None:
             img_mean_torch = torch.from_numpy(img_mean).to(self.device)
 
-        h, w = image.shape[1], image.shape[2]
+        batch_size = images.shape[0]
+        h, w = images.shape[2], images.shape[3]
 
-        bboxes = []
+        images = images.to(self.device).float()
+
+        # Store bboxes for each image in the batch
+        all_batch_bboxes = [[] for _ in range(batch_size)]
 
         with torch.no_grad():
             for s in scales:
                 if s != 1.0:
                     # Resize using torch.nn.functional.interpolate
-                    scaled_img = image.unsqueeze(0).float()  # [1, 3, H, W]
                     new_h, new_w = int(h * s), int(w * s)
-                    scaled_img = torch.nn.functional.interpolate(
-                        scaled_img,
+                    scaled_imgs = torch.nn.functional.interpolate(
+                        images,
                         size=(new_h, new_w),
                         mode='bilinear',
                         align_corners=False
                     )
-                    scaled_img = scaled_img.squeeze(0)  # [3, H, W]
                 else:
                     # No resize needed
-                    scaled_img = image.float()  # [3, H, W]
+                    scaled_imgs = images  # [B, 3, H, W]
 
-                # At this point: RGB [3, H, W], float32
+                # At this point: RGB [B, 3, H, W], float32
                 # Subtract mean (applied to RGB channels)
-                scaled_img = scaled_img.to(self.device)
-                scaled_img -= img_mean_torch
+                scaled_imgs -= img_mean_torch
 
-                # Add batch dimension
-                x = scaled_img.unsqueeze(0)
-                detections = self.net(x).cpu().numpy()
+                # Forward pass through network
+                detections = self.net(scaled_imgs).cpu().numpy()  # [B, num_priors, num_classes, 5]
 
                 scale = np.float32([w, h, w, h])
 
-                for i in range(detections.shape[1]):
-                    j = 0
-                    while detections[0, i, j, 0] > conf_th:
-                        score = detections[0, i, j, 0]
-                        pt = (detections[0, i, j, 1:] * scale)
-                        bbox = [pt[0], pt[1], pt[2], pt[3], score]
-                        bboxes.append(bbox)
-                        j += 1
+                # Process detections for each image in the batch
+                for batch_idx in range(batch_size):
+                    for i in range(detections.shape[1]):
+                        j = 0
+                        while detections[batch_idx, i, j, 0] > conf_th:
+                            score = detections[batch_idx, i, j, 0]
+                            pt = (detections[batch_idx, i, j, 1:] * scale)
+                            bbox = [pt[0], pt[1], pt[2], pt[3], score]
+                            all_batch_bboxes[batch_idx].append(bbox)
+                            j += 1
 
-        bboxes = np.float32(bboxes).reshape(-1, 5)  # reshape in case of empty `bboxes` list
-        keep = nms_(bboxes, 0.1)
-        bboxes = bboxes[keep]
+        # Apply NMS to each image's detections separately
+        result_bboxes = []
+        for bboxes in all_batch_bboxes:
+            if len(bboxes) == 0:
+                result_bboxes.append(np.empty((0, 5), dtype=np.float32))
+            else:
+                bboxes = np.float32(bboxes)
+                keep = nms_(bboxes, 0.1)
+                result_bboxes.append(bboxes[keep])
 
-        return bboxes
+        return result_bboxes

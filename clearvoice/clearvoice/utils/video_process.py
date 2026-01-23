@@ -115,7 +115,7 @@ def main(video_args, args):
 
     # Face detection for the video frames with batched inference
     t1 = time.time()
-    faces = detect_faces(video_args, decoder, batch_size=32)
+    faces = detect_faces(video_args, decoder, batch_size=128)
     print(f'{time.time() - t1} seconds: face detection')
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" % (video_args.pyworkPath))
 
@@ -210,7 +210,7 @@ def detect_faces(video_args, decoder, batch_size=32):
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=video_args.nDataLoaderThread,
+        num_workers=1, #video_args.nDataLoaderThread,
         pin_memory=True
     )
 
@@ -221,16 +221,14 @@ def detect_faces(video_args, decoder, batch_size=32):
     for _ in range(num_frames):
         dets.append([])
 
+    # t0 = time.time()
     for batch_idx, batch in enumerate(dataloader):
+        # print(f'{time.time() - t0} seconds: waiting on the batch')
         frames = batch['frame']  # [B, 3, H, W], torch tensors
         frame_indices = batch['frame_idx']  # [B]
 
-        # Process batch through S3FD
-        batch_bboxes = []
-        for i in range(len(frames)):
-            frame = frames[i]  # [3, H, W], RGB, uint8, torch.Tensor
-            bboxes = DET.detect_faces_torch(frame, conf_th=0.9, scales=[video_args.facedetScale])
-            batch_bboxes.append(bboxes)
+        # Process entire batch through S3FD at once
+        batch_bboxes = DET.detect_faces_batch(frames, conf_th=0.9, scales=[video_args.facedetScale])
 
         # Store results
         for i, (fidx, bboxes) in enumerate(zip(frame_indices, batch_bboxes)):
@@ -241,6 +239,7 @@ def detect_faces(video_args, decoder, batch_size=32):
         if batch_idx % 10 == 0:
             processed = min((batch_idx + 1) * batch_size, num_frames)
             sys.stderr.write('%s-%05d/%05d\r' % (video_args.videoFilePath, processed, num_frames))
+        # t0 = time.time()
 
     sys.stderr.write('\n')
     savePath = os.path.join(video_args.pyworkPath, 'faces.pckl')
@@ -399,7 +398,6 @@ def evaluate_network(vidTracks, video_args, args):
         # Load audio
         audio = track['audio'].astype('float32')
 
-        t1 = time.time()
         # Process video tensor: [n_frames, 3, 224, 224], uint8, RGB
         video_tensor = track['video_tensor']  # torch.Tensor
 
@@ -422,7 +420,6 @@ def evaluate_network(vidTracks, video_args, args):
             visual = np.pad(visual, ((0, int(length - visual.shape[0])), (0, 0), (0, 0)), mode='edge')
 
         visual = np.expand_dims(visual, axis=0)  # [1, T, 112, 112]
-        print(time.time() - t1, 'seconds: process one face video tensor')
 
         # if architecture needs to process face tracks in pairs:
         if track_second is not None:
