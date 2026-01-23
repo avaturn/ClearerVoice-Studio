@@ -10,6 +10,7 @@ from .box_utils import nms_
 
 
 img_mean = np.array([104., 117., 123.])[:, np.newaxis, np.newaxis].astype('float32')
+img_mean_torch = None  # Will be initialized lazily
 
 class S3FD():
 
@@ -66,5 +67,68 @@ class S3FD():
 
             keep = nms_(bboxes, 0.1)
             bboxes = bboxes[keep]
+
+        return bboxes
+
+    def detect_faces_torch(self, image, conf_th=0.8, scales=[1]):
+        """
+        Detect faces using RGB torch.Tensor input.
+
+        Args:
+            image: RGB torch.Tensor of shape [3, H, W], uint8
+            conf_th: Confidence threshold
+            scales: List of scales for multi-scale detection
+
+        Returns:
+            bboxes: numpy array of shape [N, 5] with [x1, y1, x2, y2, score]
+        """
+        global img_mean_torch
+        if img_mean_torch is None:
+            img_mean_torch = torch.from_numpy(img_mean).to(self.device)
+
+        h, w = image.shape[1], image.shape[2]
+
+        bboxes = []
+
+        with torch.no_grad():
+            for s in scales:
+                if s != 1.0:
+                    # Resize using torch.nn.functional.interpolate
+                    scaled_img = image.unsqueeze(0).float()  # [1, 3, H, W]
+                    new_h, new_w = int(h * s), int(w * s)
+                    scaled_img = torch.nn.functional.interpolate(
+                        scaled_img,
+                        size=(new_h, new_w),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+                    scaled_img = scaled_img.squeeze(0)  # [3, H, W]
+                else:
+                    # No resize needed
+                    scaled_img = image.float()  # [3, H, W]
+
+                # At this point: RGB [3, H, W], float32
+                # Subtract mean (applied to RGB channels)
+                scaled_img = scaled_img.to(self.device)
+                scaled_img -= img_mean_torch
+
+                # Add batch dimension
+                x = scaled_img.unsqueeze(0)
+                detections = self.net(x).cpu().numpy()
+
+                scale = np.float32([w, h, w, h])
+
+                for i in range(detections.shape[1]):
+                    j = 0
+                    while detections[0, i, j, 0] > conf_th:
+                        score = detections[0, i, j, 0]
+                        pt = (detections[0, i, j, 1:] * scale)
+                        bbox = [pt[0], pt[1], pt[2], pt[3], score]
+                        bboxes.append(bbox)
+                        j += 1
+
+        bboxes = np.float32(bboxes).reshape(-1, 5)  # reshape in case of empty `bboxes` list
+        keep = nms_(bboxes, 0.1)
+        bboxes = bboxes[keep]
 
         return bboxes

@@ -41,8 +41,6 @@ class VideoFrameDataset(torch.utils.data.Dataset):
         frame_idx = self.frame_indices[idx]
         # Get single frame: returns tensor of shape [3, H, W]
         frame = self.decoder.get_frame_at(frame_idx).data
-        # Convert from [3, H, W] to [H, W, 3] and to numpy for consistency with existing code
-        frame = frame.permute(1, 2, 0)  # uint8, [H, W, 3], RGB
         return {'frame': frame, 'frame_idx': frame_idx}
 
 
@@ -224,14 +222,14 @@ def detect_faces(video_args, decoder, batch_size=32):
         dets.append([])
 
     for batch_idx, batch in enumerate(dataloader):
-        frames = batch['frame']  # [B, H, W, 3], numpy arrays
+        frames = batch['frame']  # [B, 3, H, W], torch tensors
         frame_indices = batch['frame_idx']  # [B]
 
         # Process batch through S3FD
         batch_bboxes = []
         for i in range(len(frames)):
-            frame = frames[i]  # [H, W, 3], RGB, uint8
-            bboxes = DET.detect_faces(frame.numpy(), conf_th=0.9, scales=[video_args.facedetScale])
+            frame = frames[i]  # [3, H, W], RGB, uint8, torch.Tensor
+            bboxes = DET.detect_faces_torch(frame, conf_th=0.9, scales=[video_args.facedetScale])
             batch_bboxes.append(bboxes)
 
         # Store results
