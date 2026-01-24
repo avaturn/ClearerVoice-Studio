@@ -5,6 +5,7 @@ import sys, time, os, tqdm, torch, argparse, glob, subprocess, warnings, cv2, pi
 import numpy as np
 from scipy import signal
 from shutil import rmtree
+from pathlib import Path
 from scipy.io import wavfile
 from scipy.interpolate import interp1d
 from sklearn.metrics import accuracy_score, f1_score
@@ -53,8 +54,8 @@ def process_tse(args, model, device, data_reader, output_wave_dir):
     assert args.sampling_rate == 16000
     with torch.no_grad():
         for videoPath in data_reader:  # Loop over all video samples
-            savFolder = videoPath.split(os.path.sep)[-1]
-            video_args.savePath = f'{output_wave_dir}/{savFolder.split(".")[0]}/'
+            output_folder_name = Path(videoPath).with_suffix("").name
+            video_args.savePath = str(Path(output_wave_dir) / output_folder_name)
             video_args.videoPath = videoPath
             main(video_args, args)
 
@@ -333,7 +334,6 @@ def track_shot(video_args, sceneFaces):
     return tracks
 
 def crop_video(video_args, track, decoder, full_audio, crop_idx):
-    t0 = time.time()
     # CPU: crop the face clips and return as RGB tensors [n_frames, 3, 224, 224]
     dets = {'x':[], 'y':[], 's':[]}
     for det in track['bbox']: # Read the tracks
@@ -367,9 +367,6 @@ def crop_video(video_args, track, decoder, full_audio, crop_idx):
     cropped_frames = np.stack(cropped_frames, axis=0)  # [n_frames, 224, 224, 3]
     cropped_frames_tensor = torch.from_numpy(cropped_frames).permute(0, 3, 1, 2)  # [n_frames, 3, 224, 224]
 
-    print(f'{time.time() - t0} seconds: everything else in crop_video')
-    t0 = time.time()
-
     # Extract audio segment by slicing the full audio array
     # Video is at 25 fps, audio is at 16000 Hz
     audio_sample_rate = 16000
@@ -377,8 +374,6 @@ def crop_video(video_args, track, decoder, full_audio, crop_idx):
     start_sample = int((track['frame'][0] / video_fps) * audio_sample_rate)
     end_sample = int(((track['frame'][-1] + 1) / video_fps) * audio_sample_rate)
     audio = full_audio[start_sample:end_sample]
-
-    print(f'{time.time() - t0} seconds: audio slicing in crop_video')
 
     return {
         'track': track,
