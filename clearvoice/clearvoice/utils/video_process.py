@@ -6,6 +6,7 @@ import numpy as np
 from scipy import signal
 from shutil import rmtree
 from pathlib import Path
+import tempfile
 from scipy.io import wavfile
 from scipy.interpolate import interp1d
 from sklearn.metrics import accuracy_score, f1_score
@@ -56,7 +57,7 @@ def process_tse(args, model, device, data_reader, output_wave_dir):
         for videoPath in data_reader:  # Loop over all video samples
             output_folder_name = Path(videoPath).with_suffix("").name
             video_args.savePath = str(Path(output_wave_dir) / output_folder_name)
-            video_args.videoPath = videoPath
+            video_args.videoFilePath = videoPath
             main(video_args, args)
 
 
@@ -78,6 +79,8 @@ def args_param():
 
 # Main function
 def main(video_args, args):
+    print(f"Processing video {video_args.videoFilePath}")
+
     # Initialization
     video_args.pyaviPath = os.path.join(video_args.savePath, 'py_video')
     video_args.pyframesPath = os.path.join(video_args.savePath, 'pyframes')
@@ -89,9 +92,26 @@ def main(video_args, args):
     os.makedirs(video_args.pyworkPath, exist_ok=True)  # Save the results in this process by the pckl method
     os.makedirs(video_args.pycropPath, exist_ok=True)  # Save the detected face clips (audio+video) in this process
 
+    # If the video is too large, downscale first
+    t1 = time.time()
+    video_capture_tmp = cv2.VideoCapture(video_args.videoFilePath)
+    video_original_h = video_capture_tmp.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    video_original_w = video_capture_tmp.get(cv2.CAP_PROP_FRAME_WIDTH)
+    video_capture_tmp.release()
+    if video_original_w > 1280:
+        downscaled_video_path = Path(tempfile.gettempdir()) / \
+            Path(video_args.videoFilePath).with_suffix(".tmp.mp4").name
+        command = \
+            f"ffmpeg -y -hide_banner -i {video_args.videoFilePath} " \
+            f"-threads {video_args.nDataLoaderThread} -c:a copy -vf scale=1280:-2 " \
+            f"{downscaled_video_path} -loglevel warning"
+        print(command)
+        subprocess.call(command, shell=True, stdout=None)
+        video_args.videoFilePath = str(downscaled_video_path)
+    print(f'{time.time() - t1} seconds: downscaling to HD')
+
     # Load video into memory using torchcodec
     t1 = time.time()
-    video_args.videoFilePath = video_args.videoPath
     with open(video_args.videoFilePath, 'rb') as f:
         video_raw = f.read()
     decoder = torchcodec.decoders.VideoDecoder(video_raw)
