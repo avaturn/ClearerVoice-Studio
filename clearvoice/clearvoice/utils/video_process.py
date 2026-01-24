@@ -65,7 +65,7 @@ def process_tse(args, model, device, data_reader, output_wave_dir):
 def args_param():
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser()
-    parser.add_argument('--nDataLoaderThread',     type=int,   default=10,   help='Number of workers')
+    parser.add_argument('--nDataLoaderThread',     type=int,   default=int(os.cpu_count() * 0.8),   help='Number of workers')
     parser.add_argument('--facedetScale',          type=float, default=0.25, help='Scale factor for face detection, the frames will be scale to 0.25 orig')
     parser.add_argument('--minTrack',              type=int,   default=0,    help='Number of min frames for each shot')
     parser.add_argument('--numFailedDet',          type=int,   default=10**6,help='Number of missed detections allowed before tracking is stopped')
@@ -140,7 +140,7 @@ def main(video_args, args):
 
     # Face detection for the video frames with batched inference
     t1 = time.time()
-    faces = detect_faces(video_args, decoder, batch_size=128)
+    faces = detect_faces(video_args, decoder, batch_size=256)
     print(f'{time.time() - t1} seconds: face detection')
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" % (video_args.pyworkPath))
 
