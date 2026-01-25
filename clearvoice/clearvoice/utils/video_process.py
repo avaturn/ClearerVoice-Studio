@@ -145,16 +145,17 @@ def main(video_args, args):
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" % (video_args.pyworkPath))
 
     # Face tracking
-    allTracks, vidTracks = [], []
+    allTracks = []  # list of [track1: dict, track2: dict] for each scene
     for shot in scene:
         if shot[1].frame_num - shot[0].frame_num >= video_args.minTrack:  # Discard the shot frames less than minTrack frames
-            allTracks.extend(track_shot_theskindeep(video_args, faces[shot[0].frame_num:shot[1].frame_num], shot[0].frame_num))
-    sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" % len(allTracks))
+            allTracks.append(track_shot_theskindeep(video_args, faces[shot[0].frame_num:shot[1].frame_num], shot[0].frame_num))
+    sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" % sum(len(x) for x in allTracks))
 
     # Face clips cropping - returns tensors in memory
     t1 = time.time()
-    for ii, track in tqdm.tqdm(enumerate(allTracks), total=len(allTracks)):
-        vidTracks.append(crop_video(video_args, track, decoder, full_audio, ii))
+    vidTracks = []
+    for scene_tracks in tqdm.tqdm(allTracks):
+        vidTracks.append(crop_video(video_args, scene_tracks, decoder, full_audio))
     savePath = os.path.join(video_args.pyworkPath, 'tracks.pckl')
     with open(savePath, 'wb') as fil:
         pickle.dump(vidTracks, fil)
@@ -185,24 +186,26 @@ def main(video_args, args):
     sf.write(video_args.savePath + f"/audio_left.wav", audio_left, 16000)
     sf.write(video_args.savePath + f"/audio_right.wav", audio_right, 16000)
 
-    # # Save cropped face videos to disk using torchcodec
-    # t1 = time.time()
-    # for idx, track in enumerate(vidTracks):
-    #     video_tensor = track['video_tensor']  # [n_frames, 3, 224, 224], uint8
-    #     encoder = torchcodec.encoders.VideoEncoder(video_tensor, frame_rate=25.0)
-    #     orig_path = os.path.join(video_args.pycropPath, f'orig_{idx}.mp4')
-    #     encoder.to_file(orig_path)
+    # Save cropped face videos to disk using torchcodec
+    t1 = time.time()
+    for idx, track in enumerate(vidTracks):
+        video_tensors = track['video_tensors']  # [n_speakers, n_frames, 3, 224, 224], float32
+        for j, video_tensor in enumerate(video_tensors):
+            out_idx = idx*2 + j
+            encoder = torchcodec.encoders.VideoEncoder((video_tensor * 255.0).round().byte(), frame_rate=25.0)
+            orig_path = os.path.join(video_args.pycropPath, f'orig_{out_idx:04}.mp4')
+            encoder.to_file(orig_path)
 
-    #     # Combine with estimated audio
-    #     est_audio_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.wav')
-    #     est_video_path = os.path.join(video_args.pycropPath, f'est_{idx:04}.mp4')
-    #     command = f"ffmpeg -y -hide_banner -i {orig_path} -i {est_audio_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {est_video_path} -loglevel warning"
-    #     subprocess.call(command, shell=True, stdout=None)
+            # Combine with estimated audio
+            est_audio_path = os.path.join(video_args.pycropPath, f'est_{out_idx:04}.wav')
+            est_video_path = os.path.join(video_args.pycropPath, f'est_{out_idx:04}.mp4')
+            command = f"ffmpeg -y -hide_banner -i {orig_path} -i {est_audio_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {est_video_path} -loglevel warning"
+            subprocess.call(command, shell=True, stdout=None)
 
-    #     # Clean up temporary files
-    #     os.remove(orig_path)
+            # Clean up temporary files
+            os.remove(orig_path)
 
-    # print(f'{time.time() - t1} seconds: saving output videos')
+    print(f'{time.time() - t1} seconds: saving output videos')
 
     # Visualization (optional)
     t1 = time.time()
@@ -359,129 +362,179 @@ def track_shot(video_args, sceneFaces):
 
     return tracks
 
-def crop_video(video_args, track, decoder, full_audio, crop_idx):
+def crop_video(video_args, scene_tracks, decoder, full_audio, batch_size=16):
     # CPU: crop the face clips and return as RGB tensors [n_frames, 3, 224, 224]
-    dets = {'x':[], 'y':[], 's':[]}
-    for det in track['bbox']: # Read the tracks
-        dets['s'].append(max((det[3]-det[1]), (det[2]-det[0]))/2)
-        dets['y'].append((det[1]+det[3])/2) # crop center y
-        dets['x'].append((det[0]+det[2])/2) # crop center x
-    dets['s'] = signal.medfilt(dets['s'], kernel_size=13)  # Smooth detections
-    dets['x'] = signal.medfilt(dets['x'], kernel_size=13)
-    dets['y'] = signal.medfilt(dets['y'], kernel_size=13)
+    for i in range(0, len(scene_tracks)):
+        assert np.all(scene_tracks[i]['frame'] == scene_tracks[0]['frame']), \
+            f"This function only works with sets of face tracks defined on same frames " \
+            f"in the scene"
+        assert np.all(np.diff(scene_tracks[i]['frame']) == 1), \
+            f"This function only works with continuous face tracks"
+
+    start_frame_idx = scene_tracks[0]['frame'][0].item()
+    num_frames = len(scene_tracks[0]['frame'])
+
+    # Smooth bboxes and convert them to a different convention
+    scene_tracks_converted = []
+
+    for track in scene_tracks:
+        dets = {'x': [], 'y': [], 's': []}
+
+        for det in track['bbox']: # Read the tracks
+            dets['s'].append(max((det[3]-det[1]), (det[2]-det[0]))/2)
+            dets['y'].append((det[1]+det[3])/2) # crop center y
+            dets['x'].append((det[0]+det[2])/2) # crop center x
+        dets['s'] = signal.medfilt(dets['s'], kernel_size=13)  # Smooth detections
+        dets['x'] = signal.medfilt(dets['x'], kernel_size=13)
+        dets['y'] = signal.medfilt(dets['y'], kernel_size=13)
+
+        scene_tracks_converted.append(dets)
 
     # Extract and crop face frames
-    cropped_frames = []
-    for fidx, frame_idx in enumerate(track['frame']):
-        cs  = video_args.cropScale
-        bs  = dets['s'][fidx]   # Detection box size
-        bsi = int(bs * (1 + 2 * cs))  # Pad videos by this amount
+    cropped_frames = [[] for _ in scene_tracks]
 
-        # Get frame from decoder
-        frame = decoder.get_frame_at(int(frame_idx)).data  # [3, H, W], uint8, RGB
-        frame = frame.permute(1, 2, 0).cpu().numpy()  # [H, W, 3]
+    # Create dataset and dataloader for concurrent video decoding (only for this scene)
+    frame_indices = list(range(start_frame_idx, start_frame_idx + num_frames))
+    dataset = VideoFrameDataset(decoder, frame_indices=frame_indices)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=video_args.nDataLoaderThread,
+    )
+    device = 'cuda'
 
-        # Pad and crop
-        frame_padded = np.pad(frame, ((bsi,bsi), (bsi,bsi), (0, 0)), 'constant', constant_values=(110, 110))
-        my  = dets['y'][fidx] + bsi  # BBox center Y
-        mx  = dets['x'][fidx] + bsi  # BBox center X
-        face = frame_padded[int(my-bs):int(my+bs*(1+2*cs)),int(mx-bs*(1+cs)):int(mx+bs*(1+cs))]
-        face_resized = cv2.resize(face, (224, 224))  # [224, 224, 3]
-        cropped_frames.append(face_resized)
+    times = [
+        ['wb', 0.0],
+        []
+    ]
 
-    # Convert to tensor: [n_frames, 3, 224, 224]
-    cropped_frames = np.stack(cropped_frames, axis=0)  # [n_frames, 224, 224, 3]
-    cropped_frames_tensor = torch.from_numpy(cropped_frames).permute(0, 3, 1, 2)  # [n_frames, 3, 224, 224]
+    # Create sampling grid for 224x224 output
+    out_size = 224
+    grid_y_template, grid_x_template = torch.meshgrid(
+        torch.linspace(0, 1, out_size, device=device),
+        torch.linspace(0, 1, out_size, device=device),
+        indexing='ij'
+    )
+
+    current_chunk_start = 0
+    for frame_batch in dataloader:
+        frame_batch = frame_batch['frame'].to(device).float() / 255.0  # torch.float32, 0..1, [b, 3, h, w]
+        curr_batch_size = len(frame_batch)
+        batch_end = current_chunk_start + curr_batch_size
+
+        # Get input dimensions
+        _, _, H, W = frame_batch.shape
+
+        for track_idx, dets in enumerate(scene_tracks_converted):
+            # Get batch size and extract crop parameters for this batch
+
+            # Extract crop parameters (center x, center y, half-size)
+            crop_x = torch.tensor(dets['x'][current_chunk_start:batch_end], dtype=torch.float32, device=device)
+            crop_y = torch.tensor(dets['y'][current_chunk_start:batch_end], dtype=torch.float32, device=device)
+            # Detection box half-size
+            bs = torch.tensor(dets['s'][current_chunk_start:batch_end], dtype=torch.float32, device=device)
+            cs = video_args.cropScale
+
+            # Original crop logic:
+            # Y: from (my - bs) to (my + bs*(1+2*cs)), size = 2*bs*(1+cs)
+            # X: from (mx - bs*(1+cs)) to (mx + bs*(1+cs)), size = 2*bs*(1+cs)
+            # The Y crop is asymmetric (more below center), X is symmetric
+
+            # For symmetric grid_sample, we need:
+            # - Half-size of crop region: bs*(1+cs)
+            # - Adjusted Y center to account for asymmetry: my + bs*cs
+            # - X center remains: mx
+
+            crop_half_size = bs * (1 + cs)  # Half-size: bs*(1+cs)
+            crop_y_center = crop_y + bs * cs  # Adjust Y center for asymmetry
+            crop_x_center = crop_x  # X is symmetric
+
+            # Expand to batch dimension [curr_batch_size, 224, 224]
+            grid_x = grid_x_template.unsqueeze(0).expand(curr_batch_size, -1, -1)
+            grid_y = grid_y_template.unsqueeze(0).expand(curr_batch_size, -1, -1)
+
+            # Compute crop regions in pixel coordinates
+            crop_x_min = (crop_x_center - crop_half_size).view(-1, 1, 1)
+            crop_x_max = (crop_x_center + crop_half_size).view(-1, 1, 1)
+            crop_y_min = (crop_y_center - crop_half_size).view(-1, 1, 1)
+            crop_y_max = (crop_y_center + crop_half_size).view(-1, 1, 1)
+
+            # Map from [0, 1] grid to crop region in pixel coordinates
+            sample_x = crop_x_min + grid_x * (crop_x_max - crop_x_min)
+            sample_y = crop_y_min + grid_y * (crop_y_max - crop_y_min)
+
+            # Normalize to [-1, 1] for grid_sample
+            sample_x_norm = (sample_x / (W - 1)) * 2 - 1
+            sample_y_norm = (sample_y / (H - 1)) * 2 - 1
+
+            # Create grid [curr_batch_size, 224, 224, 2] with [x, y] in last dimension
+            grid = torch.stack([sample_x_norm, sample_y_norm], dim=-1)
+
+            # Apply grid_sample (requires float input)
+            batch_cropped = torch.nn.functional.grid_sample(
+                frame_batch,
+                grid,
+                mode='bilinear',
+                padding_mode='zeros',
+                align_corners=True
+            )
+
+            cropped_frames[track_idx].append(batch_cropped.cpu())
+
+        current_chunk_start += curr_batch_size
+
+    cropped_frames = [torch.cat(x) for x in cropped_frames]
 
     # Extract audio segment by slicing the full audio array
     # Video is at 25 fps, audio is at 16000 Hz
     audio_sample_rate = 16000
     video_fps = 25
-    start_sample = int((track['frame'][0] / video_fps) * audio_sample_rate)
-    end_sample = int(((track['frame'][-1] + 1) / video_fps) * audio_sample_rate)
+    start_sample = int((start_frame_idx / video_fps) * audio_sample_rate)
+    end_sample = int(((start_frame_idx + num_frames) / video_fps) * audio_sample_rate)
     audio = full_audio[start_sample:end_sample]
 
     return {
-        'track': track,
-        'proc_track': dets,
-        'video_tensor': cropped_frames_tensor,  # [n_frames, 3, 224, 224], uint8, RGB
+        'tracks': scene_tracks,
+        'proc_tracks': scene_tracks_converted,
+        'video_tensors': cropped_frames,  # list of [num_frames, 3, 224, 224], float32, 0..1, RGB
         'audio': audio
     }
 
 
 def evaluate_network(vidTracks, video_args, args):
-    # vidTracks: list of dicts with 'video_tensor', 'audio', 'track', 'proc_track'
+    # vidTracks: list of dicts with 'video_tensors', 'audio', 'tracks', 'proc_tracks'
 
     # this architecture only accepts paired videos
-    if args.network == "AV_TFGridNet_ISAM_TSE_16K":
-        assert len(vidTracks) % 2 == 0, \
-            f"For TFGridNet, face tracks have to come in pairs, but got {len(vidTracks)} videos"
-
-        tracks_new = []
-        for i in range(0, len(vidTracks), 2):
-            tracks_new.append((vidTracks[i], vidTracks[i+1]))
-    else:
-        tracks_new = [(track, None) for track in vidTracks]
-
     est_sources = []
-    for track, track_second in tqdm.tqdm(tracks_new, total=len(tracks_new)):
-
+    for track in tqdm.tqdm(vidTracks):
         # Load audio
         audio = track['audio']
+        audio = audio.astype('float32') / MAX_WAV_VALUE
 
-        # Process video tensor: [n_frames, 3, 224, 224], uint8, RGB
-        video_tensor = track['video_tensor']  # torch.Tensor
+        # Load video
+        frames = track['video_tensors'] # list of torch.float32, [num_frames, 3, 224, 224]
 
-        # Convert to grayscale and crop to center 112x112
-        videoFeature = []
-        for frame_idx in range(video_tensor.shape[0]):
-            # Get frame: [3, 224, 224]
-            frame = video_tensor[frame_idx]  # uint8, RGB
-            # Convert to grayscale: 0.299*R + 0.587*G + 0.114*B
-            frame_gray = (0.299 * frame[0] + 0.587 * frame[1] + 0.114 * frame[2]).numpy()  # [224, 224]
-            # Crop center 112x112
-            face = frame_gray[int(112-(112/2)):int(112+(112/2)), int(112-(112/2)):int(112+(112/2))]
-            videoFeature.append(face)
-
-        visual = np.array(videoFeature) / 255.0
-        visual = (visual - 0.4161) / 0.1688
+        frames = torch.stack(frames) # [num_speakers, num_frames, 3, 224, 224]
+        # Crop center - # [num_speakers, num_frames, 3, 112, 112]
+        frames = frames[..., int(112-(112/2)):int(112+(112/2)), int(112-(112/2)):int(112+(112/2))]
+        # Convert to grayscale - [num_speakers, num_frames, 112, 112]
+        frames = 0.299 * frames[..., 0, :, :] + 0.587 * frames[..., 1, :, :] + 0.114 * frames[..., 2, :, :]
+        # Normalize for neural net
+        frames = (frames - 0.4161) / 0.1688
 
         length = int(audio.shape[0] / 16000 * 25)
-        if visual.shape[0] < length:
-            visual = np.pad(visual, ((0, int(length - visual.shape[0])), (0, 0), (0, 0)), mode='edge')
+        if frames.shape[1] < length:
+            frames = torch.nn.functional.pad(
+                frames, (0, int(length - frames.shape[1]), 0, 0, 0, 0), mode='replicate')
 
-        visual = np.expand_dims(visual, axis=0)  # [1, T, 112, 112]
-
-        # if architecture needs to process face tracks in pairs:
-        if track_second is not None:
-            # Process the second video tensor
-            video_tensor_2 = track_second['video_tensor']
-
-            videoFeature = []
-            for frame_idx in range(video_tensor_2.shape[0]):
-                frame = video_tensor_2[frame_idx]
-                frame_gray = (0.299 * frame[0] + 0.587 * frame[1] + 0.114 * frame[2]).numpy()
-                face = frame_gray[int(112-(112/2)):int(112+(112/2)), int(112-(112/2)):int(112+(112/2))]
-                videoFeature.append(face)
-
-            videoFeature = np.array(videoFeature) / 255.0
-            videoFeature = (videoFeature - 0.4161) / 0.1688
-
-            length = int(audio.shape[0] / 16000 * 25)
-            if videoFeature.shape[0] < length:
-                videoFeature = np.pad(videoFeature, ((0, int(length - videoFeature.shape[0])), (0, 0), (0, 0)), mode='edge')
-
-            videoFeature = np.expand_dims(videoFeature, axis=0)
-
-            visual = np.concatenate([visual, videoFeature])[None]  # [1, 2, T, 112, 112]
-
-        audio = audio.astype('float32') / MAX_WAV_VALUE
-        audio = np.expand_dims(audio, axis=0)
+        audio = np.expand_dims(audio, axis=0)  # [1, T]
+        visual = np.expand_dims(frames, axis=0)  # [1, num_speakers, num_frames, 112, 112]
 
         inputs = (audio, visual)
 
         est_source = decode_one_audio_AV_MossFormer2_TSE_16K(video_args.model, inputs, args)
-        # shape: [speaker_no, len(audio)]
+        # shape: [num_speakers, T]
 
         est_sources.append(est_source)
 
