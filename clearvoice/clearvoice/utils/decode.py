@@ -555,7 +555,6 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
     Returns:
         numpy.ndarray: The decoded audio output as a NumPy array.
     """
-
     audio, visual = inputs
     b, t = audio.shape  # Get batch size (b) and input length (t)
 
@@ -568,12 +567,9 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
     audio = torch.from_numpy(np.float32(audio)).to(args.device)
     visual = torch.from_numpy(np.float32(visual)).to(args.device)
 
-    # print('decode.py full audio:', audio.shape)
-    # print('decode.py full visual:', visual.shape)
-
     if decode_do_segement:
         import time; t1 = time.time()
-        outputs = np.zeros(t)  # Initialize output array
+        outputs = np.zeros((model.args.speaker_no, t), dtype=np.float32)  # Initialize output array
         window = args.sampling_rate * args.decode_window  # Window length for processing
         window_v = 25 * args.decode_window
         stride = int(window * 0.6)  # Decoding stride for segmenting the input
@@ -587,26 +583,26 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
             current_idx_v = int(current_idx/args.sampling_rate*25)  # Select current video segment index
             tmp_video = visual[..., current_idx_v:current_idx_v + window_v, :, :] # Select current video segment
             
-            tmp_output = model(tmp_audio, tmp_video).detach().squeeze().cpu().numpy()  # Apply model to the segment
+            tmp_output = model(tmp_audio, tmp_video).detach().squeeze(0).cpu().numpy()  # Apply model to the segment
+            # tmp_output shape: [n_speakers, 48000]
 
             # For the first segment, use the whole segment minus the give-up length
             if current_idx == 0:
-                outputs[current_idx:current_idx + window - give_up_length] = tmp_output[:-give_up_length]
+                outputs[..., current_idx:current_idx + window - give_up_length] = tmp_output[..., :-give_up_length]
             else:
                 # For subsequent segments, account for the give-up length
-                outputs[current_idx + give_up_length:current_idx + window - give_up_length] = tmp_output[give_up_length:-give_up_length]
+                outputs[..., current_idx + give_up_length:current_idx + window - give_up_length] = tmp_output[..., give_up_length:-give_up_length]
 
             current_idx += stride  # Move to the next segment
 
         # Process the last window of audio
         tmp_audio = audio[:, -window:]
         tmp_video = visual[..., -window_v:, :, :]
-        tmp_output = model(tmp_audio, tmp_video).detach().squeeze().cpu().numpy()  # Apply model to the segment
-        outputs[-window + give_up_length:] = tmp_output[give_up_length:]
+        tmp_output = model(tmp_audio, tmp_video).detach().squeeze(0).cpu().numpy()  # Apply model to the segment
+        outputs[..., -window + give_up_length:] = tmp_output[...,give_up_length:]
         # print(f'{time.time() - t1} seconds: separation forward (audio size {t / args.sampling_rate} sec, ~{(t - (window - stride)) // stride} windows)')
     else:
         # Process the entire input at once if segmentation is not needed
-        outputs = model(audio, visual).detach().squeeze().cpu().numpy()
-
+        outputs = model(audio, visual).detach().squeeze(0).cpu().numpy()
 
     return outputs  # Return the decoded audio output as a NumPy array

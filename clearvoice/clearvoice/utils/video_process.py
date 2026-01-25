@@ -164,6 +164,9 @@ def main(video_args, args):
     # AVSE - pass tensors directly instead of reading from disk
     t1 = time.time()
     est_sources = evaluate_network(vidTracks, video_args, args)
+    # list of np arrays, shape: [speaker_no, len(audio_segment)]
+    est_sources = sum((list(x) for x in est_sources), start=[])
+    # list of np arrays, shape: [len(audio_segment)]
     print(f'{time.time() - t1} seconds: speech separation forward')
 
     # Normalize the outputs by "max amplitude of speech" (without outliers)
@@ -412,12 +415,11 @@ def evaluate_network(vidTracks, video_args, args):
     # this architecture only accepts paired videos
     if args.network == "AV_TFGridNet_ISAM_TSE_16K":
         assert len(vidTracks) % 2 == 0, \
-            f"For TFGridNet videos have to come in pairs, but got {len(vidTracks)} videos"
+            f"For TFGridNet, face tracks have to come in pairs, but got {len(vidTracks)} videos"
 
         tracks_new = []
         for i in range(0, len(vidTracks), 2):
             tracks_new.append((vidTracks[i], vidTracks[i+1]))
-            tracks_new.append((vidTracks[i+1], vidTracks[i]))
     else:
         tracks_new = [(track, None) for track in vidTracks]
 
@@ -479,7 +481,7 @@ def evaluate_network(vidTracks, video_args, args):
         inputs = (audio, visual)
 
         est_source = decode_one_audio_AV_MossFormer2_TSE_16K(video_args.model, inputs, args)
-        # print('Audio output in evaluate_network() for one track vs audio input:', est_source.shape, audio.shape)
+        # shape: [speaker_no, len(audio)]
 
         est_sources.append(est_source)
 

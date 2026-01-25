@@ -55,4 +55,4 @@ class AV_TFGridNet_ISAM_TSE_16K(nn.Module):
         # Separation network
         est_source = self.sep_network(mixture, ref) # [B, speaker_no, frames]
 
-        return est_source[:, 0] # temporary hack: drop speaker #2
+        return est_source
