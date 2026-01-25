@@ -557,10 +557,6 @@ def decode_one_audio_AV_MossFormer2_TSE_16K(model, inputs, args):
     """
 
     audio, visual = inputs
-    max_val = np.max(np.abs(audio))
-    if max_val > 1:
-        audio /= max_val
-    
     b, t = audio.shape  # Get batch size (b) and input length (t)
 
     decode_do_segement = False  # Flag to determine if segmentation is needed

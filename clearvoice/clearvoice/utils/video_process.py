@@ -21,7 +21,7 @@ from scenedetect.detectors import ContentDetector
 
 from ..models.av_mossformer2_tse.faceDetector.s3fd import S3FD
 
-from .decode import decode_one_audio_AV_MossFormer2_TSE_16K
+from .decode import decode_one_audio_AV_MossFormer2_TSE_16K, MAX_WAV_VALUE
 
 import time
 
@@ -166,12 +166,16 @@ def main(video_args, args):
     est_sources = evaluate_network(vidTracks, video_args, args)
     print(f'{time.time() - t1} seconds: speech separation forward')
 
+    # Normalize the outputs by "max amplitude of speech" (without outliers)
+    full_audio_fp32 = full_audio.astype(np.float32) / MAX_WAV_VALUE
+    original_speech_max = np.percentile(np.abs(full_audio_fp32), 95)
+    predicted_speech_max = np.percentile(np.abs(np.concatenate(est_sources)), 95)
+    for audio in est_sources:
+        audio *= original_speech_max / predicted_speech_max
+
     # Save estimated audio sources
     for idx, audio in enumerate(est_sources):
-        max_value = np.max(np.abs(audio))
-        if max_value > 1:
-            audio /= max_value
-        # sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
+        sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
 
     audio_left = np.concatenate(est_sources[::2])
     audio_right = np.concatenate(est_sources[1::2])
@@ -182,7 +186,6 @@ def main(video_args, args):
     # t1 = time.time()
     # for idx, track in enumerate(vidTracks):
     #     video_tensor = track['video_tensor']  # [n_frames, 3, 224, 224], uint8
-    #     # torchcodec expects uint8 tensor
     #     encoder = torchcodec.encoders.VideoEncoder(video_tensor, frame_rate=25.0)
     #     orig_path = os.path.join(video_args.pycropPath, f'orig_{idx}.mp4')
     #     encoder.to_file(orig_path)
@@ -422,7 +425,7 @@ def evaluate_network(vidTracks, video_args, args):
     for track, track_second in tqdm.tqdm(tracks_new, total=len(tracks_new)):
 
         # Load audio
-        audio = track['audio'].astype('float32')
+        audio = track['audio']
 
         # Process video tensor: [n_frames, 3, 224, 224], uint8, RGB
         video_tensor = track['video_tensor']  # torch.Tensor
@@ -470,10 +473,11 @@ def evaluate_network(vidTracks, video_args, args):
 
             visual = np.concatenate([visual, videoFeature])[None]  # [1, 2, T, 112, 112]
 
-        audio /= np.max(np.abs(audio))
+        audio = audio.astype('float32') / MAX_WAV_VALUE
         audio = np.expand_dims(audio, axis=0)
 
         inputs = (audio, visual)
+
         est_source = decode_one_audio_AV_MossFormer2_TSE_16K(video_args.model, inputs, args)
         # print('Audio output in evaluate_network() for one track vs audio input:', est_source.shape, audio.shape)
 
