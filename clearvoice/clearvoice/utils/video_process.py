@@ -56,10 +56,13 @@ def process_tse(args, model, device, data_reader, output_wave_dir):
     assert args.sampling_rate == 16000
     with torch.no_grad():
         for videoPath in data_reader:  # Loop over all video samples
-            output_folder_name = Path(videoPath).with_suffix("").name
-            video_args.savePath = str(Path(output_wave_dir) / output_folder_name)
-            video_args.videoFilePath = videoPath
-            main(video_args, args)
+            try:
+                output_folder_name = Path(videoPath).with_suffix("").name
+                video_args.savePath = str(Path(output_wave_dir) / output_folder_name)
+                video_args.videoFilePath = videoPath
+                main(video_args, args)
+            except Exception as e:
+                print(f"Failed to process {videoPath}. {e}")
 
 
 
