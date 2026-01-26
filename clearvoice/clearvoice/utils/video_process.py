@@ -7,6 +7,7 @@ from scipy import signal
 from shutil import rmtree
 from pathlib import Path
 import tempfile
+import copy
 from scipy.io import wavfile
 from scipy.interpolate import interp1d
 from sklearn.metrics import accuracy_score, f1_score
@@ -127,6 +128,7 @@ def main(video_args, args):
 
     # Load audio into memory
     _, full_audio = wavfile.read(video_args.audioFilePath)
+    full_audio = full_audio.astype(np.float32) / full_audio.max()
 
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the audio and save in %s \r\n" % (video_args.audioFilePath))
     print(f'{time.time() - t1} seconds: audio extraction and loading')
@@ -151,14 +153,12 @@ def main(video_args, args):
             allTracks.append(track_shot_theskindeep(video_args, faces[shot[0].frame_num:shot[1].frame_num], shot[0].frame_num))
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" % sum(len(x) for x in allTracks))
 
+    # Smooth tracks and convert to x_center/y_center/size format
+    allTracksSmooth = smooth_tracks(allTracks)
+
     # Face clips cropping - returns tensors in memory
     t1 = time.time()
-    vidTracks = []
-    for scene_tracks in tqdm.tqdm(allTracks):
-        vidTracks.append(crop_video(video_args, scene_tracks, decoder, full_audio))
-    savePath = os.path.join(video_args.pyworkPath, 'tracks.pckl')
-    with open(savePath, 'wb') as fil:
-        pickle.dump(vidTracks, fil)
+    vidTracks = crop_video(video_args, allTracksSmooth, decoder, full_audio)
     print(f'{time.time() - t1} seconds: cropping')
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face Crop completed \r\n")
 
@@ -171,8 +171,7 @@ def main(video_args, args):
     print(f'{time.time() - t1} seconds: speech separation forward')
 
     # Normalize the outputs by "max amplitude of speech" (without outliers)
-    full_audio_fp32 = full_audio.astype(np.float32) / MAX_WAV_VALUE
-    original_speech_max = np.percentile(np.abs(full_audio_fp32), 95)
+    original_speech_max = np.percentile(np.abs(full_audio), 95)
     predicted_speech_max = np.percentile(np.abs(np.concatenate(est_sources)), 95)
     for audio in est_sources:
         audio *= original_speech_max / predicted_speech_max
@@ -189,10 +188,11 @@ def main(video_args, args):
     # Save cropped face videos to disk using torchcodec
     t1 = time.time()
     for idx, track in enumerate(vidTracks):
-        video_tensors = track['video_tensors']  # [n_speakers, n_frames, 3, 224, 224], float32
+        video_tensors = track['video_tensors']  # list of [n_frames, 1, 224, 224], torch.uint8
         for j, video_tensor in enumerate(video_tensors):
             out_idx = idx*2 + j
-            encoder = torchcodec.encoders.VideoEncoder((video_tensor * 255.0).round().byte(), frame_rate=25.0)
+            video_tensor = torch.cat([video_tensor] * 3, dim=1)
+            encoder = torchcodec.encoders.VideoEncoder(video_tensor, frame_rate=25.0)
             orig_path = os.path.join(video_args.pycropPath, f'orig_{out_idx:04}.mp4')
             encoder.to_file(orig_path)
 
@@ -362,52 +362,66 @@ def track_shot(video_args, sceneFaces):
 
     return tracks
 
-def crop_video(video_args, scene_tracks, decoder, full_audio, batch_size=16):
-    # CPU: crop the face clips and return as RGB tensors [n_frames, 3, 224, 224]
-    for i in range(0, len(scene_tracks)):
-        assert np.all(scene_tracks[i]['frame'] == scene_tracks[0]['frame']), \
-            f"This function only works with sets of face tracks defined on same frames " \
-            f"in the scene"
-        assert np.all(np.diff(scene_tracks[i]['frame']) == 1), \
-            f"This function only works with continuous face tracks"
+def smooth_tracks(all_tracks):
+    all_tracks_smooth = []
 
-    start_frame_idx = scene_tracks[0]['frame'][0].item()
-    num_frames = len(scene_tracks[0]['frame'])
+    for scene_tracks in all_tracks:
+        # Smooth bboxes and convert them to a different convention
+        scene_tracks_converted = []
 
-    # Smooth bboxes and convert them to a different convention
-    scene_tracks_converted = []
+        for track in scene_tracks:
+            dets = {'x': [], 'y': [], 's': [], 'frame': track['frame']}
 
-    for track in scene_tracks:
-        dets = {'x': [], 'y': [], 's': []}
+            for det in track['bbox']: # Read the tracks
+                dets['s'].append(max((det[3]-det[1]), (det[2]-det[0]))/2)
+                dets['y'].append((det[1]+det[3])/2) # crop center y
+                dets['x'].append((det[0]+det[2])/2) # crop center x
+            dets['s'] = signal.medfilt(dets['s'], kernel_size=13)  # Smooth detections
+            dets['x'] = signal.medfilt(dets['x'], kernel_size=13)
+            dets['y'] = signal.medfilt(dets['y'], kernel_size=13)
 
-        for det in track['bbox']: # Read the tracks
-            dets['s'].append(max((det[3]-det[1]), (det[2]-det[0]))/2)
-            dets['y'].append((det[1]+det[3])/2) # crop center y
-            dets['x'].append((det[0]+det[2])/2) # crop center x
-        dets['s'] = signal.medfilt(dets['s'], kernel_size=13)  # Smooth detections
-        dets['x'] = signal.medfilt(dets['x'], kernel_size=13)
-        dets['y'] = signal.medfilt(dets['y'], kernel_size=13)
+            scene_tracks_converted.append(dets)
 
-        scene_tracks_converted.append(dets)
+        all_tracks_smooth.append(scene_tracks_converted)
+
+    return all_tracks_smooth
+
+def crop_video(video_args, all_tracks, decoder, full_audio, batch_size=128):
+    # Crop the face clips and return as RGB tensors [n_frames, 3, 224, 224]
+    for scene_tracks in all_tracks:
+        for i in range(0, len(scene_tracks)):
+            assert np.all(scene_tracks[i]['frame'] == scene_tracks[0]['frame']), \
+                f"This function only works with sets of face tracks defined on same frames " \
+                f"in the scene"
+            assert np.all(np.diff(scene_tracks[i]['frame']) == 1), \
+                f"This function only works with continuous face tracks"
+            assert all(len(scene_tracks) == len(all_tracks[0]) for scene_tracks in all_tracks), \
+                f"This function only works with same number of face tracks in every scene"
+
+    # Combine tracks for performance
+    fields = 'x', 'y', 's'
+    num_tracks = len(all_tracks[0])
+    all_tracks_combined = [
+        {
+                field: np.concatenate([scene_tracks[track_idx][field] for scene_tracks in all_tracks])
+                for field in fields
+        } for track_idx in range(num_tracks)
+    ]
 
     # Extract and crop face frames
-    cropped_frames = [[] for _ in scene_tracks]
+    cropped_frames_all = [torch.empty((len(all_tracks_combined[0]['x']), 1, 224, 224), dtype=torch.uint8) \
+        for _ in all_tracks_combined]
 
-    # Create dataset and dataloader for concurrent video decoding (only for this scene)
-    frame_indices = list(range(start_frame_idx, start_frame_idx + num_frames))
-    dataset = VideoFrameDataset(decoder, frame_indices=frame_indices)
+    # Create dataset and dataloader for concurrent video decoding
+    dataset = VideoFrameDataset(decoder)
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=video_args.nDataLoaderThread,
+        pin_memory=True,
     )
     device = 'cuda'
-
-    times = [
-        ['wb', 0.0],
-        []
-    ]
 
     # Create sampling grid for 224x224 output
     out_size = 224
@@ -419,14 +433,19 @@ def crop_video(video_args, scene_tracks, decoder, full_audio, batch_size=16):
 
     current_chunk_start = 0
     for frame_batch in dataloader:
-        frame_batch = frame_batch['frame'].to(device).float() / 255.0  # torch.float32, 0..1, [b, 3, h, w]
-        curr_batch_size = len(frame_batch)
-        batch_end = current_chunk_start + curr_batch_size
+        frame_batch = frame_batch['frame'].to(device).float()  # torch.float32, 0..1, [b, 3, h, w]
+        # Convert to grayscale - [b, 1, h, w]
+        frame_batch = \
+            0.299 * frame_batch[..., 0, :, :] + \
+            0.587 * frame_batch[..., 1, :, :] + \
+            0.114 * frame_batch[..., 2, :, :]
+        frame_batch = frame_batch.unsqueeze(1)
 
         # Get input dimensions
-        _, _, H, W = frame_batch.shape
+        curr_batch_size, _, H, W = frame_batch.shape
+        batch_end = current_chunk_start + curr_batch_size
 
-        for track_idx, dets in enumerate(scene_tracks_converted):
+        for track_idx, dets in enumerate(all_tracks_combined):
             # Get batch size and extract crop parameters for this batch
 
             # Extract crop parameters (center x, center y, half-size)
@@ -480,27 +499,38 @@ def crop_video(video_args, scene_tracks, decoder, full_audio, batch_size=16):
                 align_corners=True
             )
 
-            cropped_frames[track_idx].append(batch_cropped.cpu())
+            batch_cropped = batch_cropped.clip(0, 255).round().byte()
+            cropped_frames_all[track_idx][current_chunk_start:batch_end][:] = batch_cropped
 
         current_chunk_start += curr_batch_size
 
-    cropped_frames = [torch.cat(x) for x in cropped_frames]
+    # Re-combine frames to match scene cuts (i.e. splits in original all_tracks)
+    retval = []
 
-    # Extract audio segment by slicing the full audio array
-    # Video is at 25 fps, audio is at 16000 Hz
-    audio_sample_rate = 16000
-    video_fps = 25
-    start_sample = int((start_frame_idx / video_fps) * audio_sample_rate)
-    end_sample = int(((start_frame_idx + num_frames) / video_fps) * audio_sample_rate)
-    audio = full_audio[start_sample:end_sample]
+    for scene_tracks in all_tracks:
+        start_frame_idx = scene_tracks[0]['frame'][0].item()
+        num_frames = len(scene_tracks[0]['frame'])
 
-    return {
-        'tracks': scene_tracks,
-        'proc_tracks': scene_tracks_converted,
-        'video_tensors': cropped_frames,  # list of [num_frames, 3, 224, 224], float32, 0..1, RGB
-        'audio': audio
-    }
+        cropped_frames_scene = [
+            cropped_frames_all_oneperson[start_frame_idx:start_frame_idx+num_frames]
+            for cropped_frames_all_oneperson in cropped_frames_all
+        ]
 
+        # Extract audio segment by slicing the full audio array
+        # Video is at 25 fps, audio is at 16000 Hz
+        audio_sample_rate = 16000
+        video_fps = 25
+        start_sample = int((start_frame_idx / video_fps) * audio_sample_rate)
+        end_sample = int(((start_frame_idx + num_frames) / video_fps) * audio_sample_rate)
+        audio = full_audio[start_sample:end_sample]
+
+        retval.append({
+            'tracks': scene_tracks,
+            'video_tensors': cropped_frames_scene,  # list of [num_frames, 1, 224, 224], float32, 0..1, grayscale
+            'audio': audio
+        })
+
+    return retval
 
 def evaluate_network(vidTracks, video_args, args):
     # vidTracks: list of dicts with 'video_tensors', 'audio', 'tracks', 'proc_tracks'
@@ -510,18 +540,17 @@ def evaluate_network(vidTracks, video_args, args):
     for track in tqdm.tqdm(vidTracks):
         # Load audio
         audio = track['audio']
-        audio = audio.astype('float32') / MAX_WAV_VALUE
 
         # Load video
-        frames = track['video_tensors'] # list of torch.float32, [num_frames, 3, 224, 224]
+        frames = track['video_tensors'] # list of torch.uint8, [num_frames, 1, 224, 224]
 
-        frames = torch.stack(frames) # [num_speakers, num_frames, 3, 224, 224]
-        # Crop center - # [num_speakers, num_frames, 3, 112, 112]
+        frames = torch.stack(frames).float() / 255.0 # [num_speakers, num_frames, 1, 224, 224]
+        # Crop center - # [num_speakers, num_frames, 1, 112, 112]
         frames = frames[..., int(112-(112/2)):int(112+(112/2)), int(112-(112/2)):int(112+(112/2))]
-        # Convert to grayscale - [num_speakers, num_frames, 112, 112]
-        frames = 0.299 * frames[..., 0, :, :] + 0.587 * frames[..., 1, :, :] + 0.114 * frames[..., 2, :, :]
         # Normalize for neural net
         frames = (frames - 0.4161) / 0.1688
+        # Remove channel dim
+        frames = frames.squeeze(2)
 
         length = int(audio.shape[0] / 16000 * 25)
         if frames.shape[1] < length:
