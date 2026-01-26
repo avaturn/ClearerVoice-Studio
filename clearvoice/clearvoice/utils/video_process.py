@@ -176,9 +176,9 @@ def main(video_args, args):
     for audio in est_sources:
         audio *= original_speech_max / predicted_speech_max
 
-    # Save estimated audio sources
-    for idx, audio in enumerate(est_sources):
-        sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
+    # # Save estimated audio sources
+    # for idx, audio in enumerate(est_sources):
+    #     sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
 
     audio_left = np.concatenate(est_sources[::2])
     audio_right = np.concatenate(est_sources[1::2])
