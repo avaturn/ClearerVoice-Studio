@@ -1,3 +1,48 @@
+## Avaturn Readme Section
+
+This is a fork of https://github.com/modelscope/ClearerVoice-Studio for easier preprocessing of datasets for audio-visual speaker separation / audio-visual speech enhancement (AVSE). A transformer neural network is given a video of 2 speakers and is asked to predict the clean speech audio for every person.
+
+Set up env (tested on Lambda aarch64 and AWS x86_64):
+```bash
+# Tested with Python 3.10 and 3.12
+pip install -U pip setuptools wheel
+pip install -U torch torchvision torchcodec --index-url https://download.pytorch.org/whl/cu128
+pip install torch_complex typeguard
+
+git clone git@github.com:avaturn/ClearerVoice-Studio.git
+cd ClearerVoice-Studio
+
+cd clearvoice
+pip install -e .
+
+cd ../train/target_speaker_extraction/checkpoints/log_VoxCeleb2_lip_tfgridnet-isam_2spk
+wget https://huggingface.co/alibabasglab/log_VoxCeleb2_lip_tfgridnet-isam_2spk/resolve/main/checkpoints/log_VoxCeleb2_lip_tfgridnet-isam_2spk%20/last_best_checkpoint.pt
+```
+
+Good to know before running:
+* Videos should be 25 fps. This limitation isn't hard to fix, but 25 is hardcoded in a few audio/video alignment functions [here](https://github.com/avaturn/ClearerVoice-Studio/blob/2058a8ae976cf82fa4f13578f6bcae68b669b245/clearvoice/clearvoice/utils/video_process.py), and is also likely the framerate used during training.
+* Number of dataloader workers and ffmpeg threads is controlled by `--nDataLoaderThread`, default is `cpu_count * 0.8`.
+* A lot of RAM (up to 80-100 GB for a 1.5 hour video) is used for storing cropped face tracks, allocated [here](https://github.com/avaturn/ClearerVoice-Studio/blob/2058a8ae976cf82fa4f13578f6bcae68b669b245/clearvoice/clearvoice/utils/video_process.py#L419). Can be easily fixed.
+
+To run:
+```
+cd ~/ClearerVoice-Studio/my_inference
+mkdir inputs outputs
+
+# Put all your videos in `inputs`
+cd inputs
+sudo apt update && sudo snap install google-cloud-sdk --classic
+gcloud init
+
+gcloud storage rsync <<<your-25fps-video-files>>> .
+
+cd ~/ClearerVoice-Studio/my_inference
+nohup python -u my_inference.py > log.txt 2>&1 &
+
+# The outputs will be `./outputs/<video_name>/{left,right}.wav`
+```
+--------------------
+
 <div align="center">
 <img src="https://github.com/user-attachments/assets/a4ccbc60-5248-4dca-8cec-09a6385c6d0f" width="768" height="192">
 </div>
@@ -103,20 +148,3 @@ Checkout some awesome Github repositories from Speech Lab of Institute for Intel
 ClearerVoice-Studio contains third-party components and code modified from some open-source repos, including: <br>
 [Speechbrain](https://github.com/speechbrain/speechbrain), [ESPnet](https://github.com/espnet), [TalkNet-ASD
 ](https://github.com/TaoRuijie/TalkNet-ASD)
-
-## Running the new model
-
-Download checkpoint from [here](https://huggingface.co/alibabasglab/log_VoxCeleb2_lip_tfgridnet-isam_2spk/) to have `train/target_speaker_extraction/checkpoints/log_VoxCeleb2_lip_tfgridnet-isam_2spk/` and create `last_best_checkpoint` file in that dir with this line: 'last_best_checkpoint.pt'.
-
-Then run as usual:
-
-```python
-from clearvoice import ClearVoice
-model_runner = ClearVoice(task='target_speaker_extraction', model_names=['AV_TFGridNet_ISAM_TSE_16K'])
-
-model_runner(
-    input_path="./inputs",
-    online_write=True,
-    output_path="./outputs",
-)
-```
