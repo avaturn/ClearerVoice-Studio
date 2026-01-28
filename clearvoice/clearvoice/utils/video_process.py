@@ -8,6 +8,7 @@ from shutil import rmtree
 from pathlib import Path
 import tempfile
 import copy
+import traceback
 from scipy.io import wavfile
 from scipy.interpolate import interp1d
 from sklearn.metrics import accuracy_score, f1_score
@@ -62,7 +63,8 @@ def process_tse(args, model, device, data_reader, output_wave_dir):
                 video_args.videoFilePath = videoPath
                 main(video_args, args)
             except Exception as e:
-                print(f"Failed to process {videoPath}. {e}")
+                print(f"Failed to process {videoPath}. The exception was:")
+                traceback.print_exc()
 
 
 
@@ -94,7 +96,6 @@ def main(video_args, args):
         rmtree(video_args.savePath)
     os.makedirs(video_args.pyaviPath, exist_ok=True)  # The path for the input video, input audio, output video
     os.makedirs(video_args.pyworkPath, exist_ok=True)  # Save the results in this process by the pckl method
-    os.makedirs(video_args.pycropPath, exist_ok=True)  # Save the detected face clips (audio+video) in this process
 
     # If the video is too large, downscale first
     t1 = time.time()
@@ -179,17 +180,21 @@ def main(video_args, args):
     for audio in est_sources:
         audio *= original_speech_max / predicted_speech_max
 
+    # Finally, save estimated separated audios
+    audio_left = np.concatenate(est_sources[::2])
+    audio_right = np.concatenate(est_sources[1::2])
+    sf.write(video_args.savePath + f"/left.wav", audio_left, 16000)
+    sf.write(video_args.savePath + f"/right.wav", audio_right, 16000)
+
+    # Uncomment to save the detected face clips (audio+video) for each scene
+    # t1 = time.time()
+    # os.makedirs(video_args.pycropPath, exist_ok=True)
+
     # # Save estimated audio sources
     # for idx, audio in enumerate(est_sources):
     #     sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
 
-    audio_left = np.concatenate(est_sources[::2])
-    audio_right = np.concatenate(est_sources[1::2])
-    sf.write(video_args.savePath + f"/audio_left.wav", audio_left, 16000)
-    sf.write(video_args.savePath + f"/audio_right.wav", audio_right, 16000)
-
-    # # Save cropped face videos to disk using torchcodec
-    # t1 = time.time()
+    # # Save cropped face videos to disk
     # for idx, track in enumerate(vidTracks):
     #     video_tensors = track['video_tensors']  # list of [n_frames, 1, 224, 224], torch.uint8
     #     for j, video_tensor in enumerate(video_tensors):
@@ -217,8 +222,7 @@ def main(video_args, args):
 
     # Clean up
     rmtree(video_args.pyworkPath)
-
-
+    rmtree(video_args.pyaviPath)
 
 
 def scene_detect(video_args):
