@@ -72,6 +72,7 @@ def args_param():
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser()
     parser.add_argument('--nDataLoaderThread',     type=int,   default=int(os.cpu_count() * 0.8),   help='Number of workers')
+    parser.add_argument('--visualize',             action='store_true',      help='Save debug visualization of cropped faces per scene')
     parser.add_argument('--facedetScale',          type=float, default=0.25, help='Scale factor for face detection, the frames will be scale to 0.25 orig')
     parser.add_argument('--minTrack',              type=int,   default=0,    help='Number of min frames for each shot')
     parser.add_argument('--numFailedDet',          type=int,   default=10**6,help='Number of missed detections allowed before tracking is stopped')
@@ -102,18 +103,26 @@ def main(video_args, args):
     video_capture_tmp = cv2.VideoCapture(video_args.videoFilePath)
     video_original_h = video_capture_tmp.get(cv2.CAP_PROP_FRAME_HEIGHT)
     video_original_w = video_capture_tmp.get(cv2.CAP_PROP_FRAME_WIDTH)
+    video_original_fps = video_capture_tmp.get(cv2.CAP_PROP_FPS)
     video_capture_tmp.release()
-    if video_original_w > 1280:
+
+    need_to_downscale = video_original_w > 1280
+    need_to_change_fps = not np.isclose(video_original_fps, 25.0)
+
+    ffmpeg_filters = ["fps=25"] * need_to_change_fps + ["scale=1280:-2"] * need_to_downscale
+    ffmpeg_filters = ",".join(ffmpeg_filters)
+
+    if ffmpeg_filters:
         downscaled_video_path = Path(tempfile.gettempdir()) / \
             Path(video_args.videoFilePath).with_suffix(".tmp.mp4").name
         command = \
             f"ffmpeg -y -hide_banner -i {video_args.videoFilePath} " \
-            f"-threads {video_args.nDataLoaderThread} -c:a copy -vf scale=1280:-2 " \
+            f"-threads {video_args.nDataLoaderThread} -c:a copy -vf {ffmpeg_filters} " \
             f"{downscaled_video_path} -loglevel warning"
         print(command)
         subprocess.call(command, shell=True, stdout=None)
         video_args.videoFilePath = str(downscaled_video_path)
-    print(f'{time.time() - t1} seconds: downscaling to HD')
+    print(f'{time.time() - t1} seconds: changing fps to 25 and downscaling to HD')
 
     # Load video into memory using torchcodec
     t1 = time.time()
@@ -187,38 +196,39 @@ def main(video_args, args):
     sf.write(video_args.savePath + f"/right.wav", audio_right, 16000)
 
     # Uncomment to save the detected face clips (audio+video) for each scene
+    if video_args.visualize:
+        t1 = time.time()
+        os.makedirs(video_args.pycropPath, exist_ok=True)
+
+        # Save estimated audio sources
+        for idx, audio in enumerate(est_sources):
+            sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
+
+        # Save cropped face videos to disk
+        for idx, track in enumerate(vidTracks):
+            video_tensors = track['video_tensors']  # list of [n_frames, 1, 224, 224], torch.uint8
+            for j, video_tensor in enumerate(video_tensors):
+                out_idx = idx*2 + j
+                video_tensor = torch.cat([video_tensor] * 3, dim=1)
+                encoder = torchcodec.encoders.VideoEncoder(video_tensor, frame_rate=25.0)
+                orig_path = os.path.join(video_args.pycropPath, f'orig_{out_idx:04}.mp4')
+                encoder.to_file(orig_path)
+
+                # Combine with estimated audio
+                est_audio_path = os.path.join(video_args.pycropPath, f'est_{out_idx:04}.wav')
+                est_video_path = os.path.join(video_args.pycropPath, f'est_{out_idx:04}.mp4')
+                command = f"ffmpeg -y -hide_banner -i {orig_path} -i {est_audio_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {est_video_path} -loglevel warning"
+                subprocess.call(command, shell=True, stdout=None)
+
+                # Clean up temporary files
+                os.remove(orig_path)
+                os.remove(est_audio_path)
+        print(f'{time.time() - t1} seconds: saving output videos')
+
+    # Visualize bounding boxes
     # t1 = time.time()
-    # os.makedirs(video_args.pycropPath, exist_ok=True)
-
-    # # Save estimated audio sources
-    # for idx, audio in enumerate(est_sources):
-    #     sf.write(video_args.pycropPath + f"/est_{idx:04}.wav", audio, 16000)
-
-    # # Save cropped face videos to disk
-    # for idx, track in enumerate(vidTracks):
-    #     video_tensors = track['video_tensors']  # list of [n_frames, 1, 224, 224], torch.uint8
-    #     for j, video_tensor in enumerate(video_tensors):
-    #         out_idx = idx*2 + j
-    #         video_tensor = torch.cat([video_tensor] * 3, dim=1)
-    #         encoder = torchcodec.encoders.VideoEncoder(video_tensor, frame_rate=25.0)
-    #         orig_path = os.path.join(video_args.pycropPath, f'orig_{out_idx:04}.mp4')
-    #         encoder.to_file(orig_path)
-
-    #         # Combine with estimated audio
-    #         est_audio_path = os.path.join(video_args.pycropPath, f'est_{out_idx:04}.wav')
-    #         est_video_path = os.path.join(video_args.pycropPath, f'est_{out_idx:04}.mp4')
-    #         command = f"ffmpeg -y -hide_banner -i {orig_path} -i {est_audio_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {est_video_path} -loglevel warning"
-    #         subprocess.call(command, shell=True, stdout=None)
-
-    #         # Clean up temporary files
-    #         os.remove(orig_path)
-
-    # print(f'{time.time() - t1} seconds: saving output videos')
-
-    # Visualization (optional)
-    t1 = time.time()
     # visualization(vidTracks, est_sources, video_args, decoder)
-    print(f'{time.time() - t1} seconds: visualization')
+    # print(f'{time.time() - t1} seconds: visualization')
 
     # Clean up
     rmtree(video_args.pyworkPath)

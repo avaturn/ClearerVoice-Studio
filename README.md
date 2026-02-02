@@ -6,6 +6,7 @@ Set up env (tested on Lambda aarch64 and AWS x86_64):
 ```bash
 # Tested with Python 3.10 and 3.12
 pip install -U pip setuptools wheel
+# e.g.: Python 3.10, torch-2.10.0+cu128 torchcodec-0.10.0+cu128 torchvision-0.25.0+cu128
 pip install -U torch torchvision torchcodec --index-url https://download.pytorch.org/whl/cu128
 pip install torch_complex typeguard
 
@@ -20,9 +21,10 @@ wget https://huggingface.co/alibabasglab/log_VoxCeleb2_lip_tfgridnet-isam_2spk/r
 ```
 
 Good to know before running:
-* Videos should be 25 fps. This limitation isn't hard to fix, but 25 is hardcoded in a few audio/video alignment functions [here](https://github.com/avaturn/ClearerVoice-Studio/blob/2058a8ae976cf82fa4f13578f6bcae68b669b245/clearvoice/clearvoice/utils/video_process.py), and is also likely the framerate used during training.
 * Number of dataloader workers and ffmpeg threads is controlled by `--nDataLoaderThread`, default is `cpu_count * 0.8`.
 * A lot of RAM (up to 80-100 GB for a 1.5 hour video) is used for storing cropped face tracks, allocated [here](https://github.com/avaturn/ClearerVoice-Studio/blob/2058a8ae976cf82fa4f13578f6bcae68b669b245/clearvoice/clearvoice/utils/video_process.py#L419). Can be easily fixed.
+* Check output log for "Failed to process" lines.
+* Pass `--visualize` to see model inputs (face detection videos) overlaid with predicted audio.
 
 To run:
 ```
