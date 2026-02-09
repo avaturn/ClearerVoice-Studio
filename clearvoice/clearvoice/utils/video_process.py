@@ -93,8 +93,6 @@ def main(video_args, args):
     video_args.pyframesPath = os.path.join(video_args.savePath, 'pyframes')
     video_args.pyworkPath = os.path.join(video_args.savePath, 'pywork')
     video_args.pycropPath = os.path.join(video_args.savePath, 'py_faceTracks')
-    if os.path.exists(video_args.savePath):
-        rmtree(video_args.savePath)
     os.makedirs(video_args.pyaviPath, exist_ok=True)  # The path for the input video, input audio, output video
     os.makedirs(video_args.pyworkPath, exist_ok=True)  # Save the results in this process by the pckl method
 
@@ -113,18 +111,33 @@ def main(video_args, args):
     ffmpeg_filters = ",".join(ffmpeg_filters)
 
     if ffmpeg_filters:
-        downscaled_video_path = Path(tempfile.gettempdir()) / \
-            Path(video_args.videoFilePath).with_suffix(".tmp.mp4").name
-        command = \
-            f"ffmpeg -y -hide_banner -i {video_args.videoFilePath} " \
-            f"-threads {video_args.nDataLoaderThread} -c:a copy -vf {ffmpeg_filters} " \
-            f"{downscaled_video_path} -loglevel warning"
-        print(command)
-        subprocess.call(command, shell=True, stdout=None)
-        video_args.videoFilePath = str(downscaled_video_path)
-    print(f'{time.time() - t1} seconds: changing fps to 25 and downscaling to HD')
+        downscaled_video_path = Path(video_args.savePath) / \
+            Path(video_args.videoFilePath).with_suffix(".downscaled.mp4").name
+        downscaled_video_path_tmp = Path(tempfile.gettempdir()) / downscaled_video_path.name
 
-    # Load video into memory using torchcodec
+        if downscaled_video_path.exists():
+            print(f"{downscaled_video_path} exists, skipping ffmpeg conversion")
+        else:
+            command = \
+                f"ffmpeg -y -hide_banner -i {video_args.videoFilePath} " \
+                f"-threads {video_args.nDataLoaderThread} -c:a copy -vf {ffmpeg_filters} " \
+                f"{downscaled_video_path_tmp} -loglevel warning"
+            print(command)
+            subprocess.call(command, shell=True, stdout=None)
+            downscaled_video_path_tmp.rename(downscaled_video_path)
+
+            print(f'{time.time() - t1} seconds: changing fps to 25 and downscaling to HD')
+
+        video_args.videoFilePath = str(downscaled_video_path)
+
+    # Scene detection for the video frames
+    t1 = time.time()
+    scenes = scene_detect(video_args)
+    # scenes = [(FrameTimecode(0, fps=25.0), FrameTimecode(num_frames - 1, fps=25.0))]
+    print(f'{time.time() - t1} seconds: scene detection')
+    sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Scene detection")
+
+    # Load video into memory
     t1 = time.time()
     with open(video_args.videoFilePath, 'rb') as f:
         video_raw = f.read()
@@ -146,22 +159,15 @@ def main(video_args, args):
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the audio and save in %s \r\n" % (video_args.audioFilePath))
     print(f'{time.time() - t1} seconds: audio extraction and loading')
 
-    # Scene detection for the video frames
-    t1 = time.time()
-    scene = scene_detect(video_args)
-    # scene = [(FrameTimecode(0, fps=25.0), FrameTimecode(num_frames - 1, fps=25.0))]
-    print(f'{time.time() - t1} seconds: scene detection')
-    sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Scene detection and save in %s \r\n" % (video_args.pyworkPath))
-
     # Face detection for the video frames with batched inference
     t1 = time.time()
     faces = detect_faces(video_args, decoder, batch_size=256)
     print(f'{time.time() - t1} seconds: face detection')
-    sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" % (video_args.pyworkPath))
+    sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection")
 
     # Face tracking
     allTracks = []  # list of [track1: dict, track2: dict] for each scene
-    for shot in scene:
+    for shot in scenes:
         if shot[1].frame_num - shot[0].frame_num >= video_args.minTrack:  # Discard the shot frames less than minTrack frames
             allTracks.append(track_shot_theskindeep(video_args, faces[shot[0].frame_num:shot[1].frame_num], shot[0].frame_num))
     sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" % sum(len(x) for x in allTracks))
@@ -237,6 +243,13 @@ def main(video_args, args):
 
 def scene_detect(video_args):
     # CPU: Scene detection, output is the list of each shot's time duration
+    scenes_file = Path(video_args.savePath) / "scenes.pkl"
+
+    if scenes_file.exists():
+        print(f"{scenes_file} exists, so skipping scene detection")
+        with open(scenes_file, 'rb') as f:
+            return pickle.load(f)
+
     videoManager = VideoManager([video_args.videoFilePath])
     statsManager = StatsManager()
     sceneManager = SceneManager(statsManager)
@@ -246,15 +259,21 @@ def scene_detect(video_args):
     videoManager.start()
     sceneManager.detect_scenes(frame_source = videoManager)
     sceneList = sceneManager.get_scene_list(baseTimecode)
-    savePath = os.path.join(video_args.pyworkPath, 'scene.pckl')
     if sceneList == []:
         sceneList = [(videoManager.get_base_timecode(),videoManager.get_current_timecode())]
-    with open(savePath, 'wb') as fil:
+    with open(scenes_file, 'wb') as fil:
         pickle.dump(sceneList, fil)
-        sys.stderr.write('%s - scenes detected %d\n'%(video_args.videoFilePath, len(sceneList)))
+    sys.stderr.write('%s - scenes detected %d\n'%(video_args.videoFilePath, len(sceneList)))
+
     return sceneList
 
 def detect_faces(video_args, decoder, batch_size=32):
+    face_detections_file = Path(video_args.savePath) / "face_detections.pkl"
+    if face_detections_file.exists():
+        print(f"{face_detections_file} exists, so skipping face detection")
+        with open(face_detections_file, 'rb') as f:
+            return pickle.load(f)
+
     # GPU: Face detection with batched inference, output is the list contains the face location and score in this frame
     DET = S3FD(device=video_args.device)
 
@@ -276,7 +295,7 @@ def detect_faces(video_args, decoder, batch_size=32):
         dets.append([])
 
     # t0 = time.time()
-    for batch_idx, batch in enumerate(dataloader):
+    for batch in tqdm.tqdm(dataloader):
         # print(f'{time.time() - t0} seconds: waiting on the batch')
         frames = batch['frame']  # [B, 3, H, W], torch tensors
         frame_indices = batch['frame_idx']  # [B]
@@ -289,16 +308,11 @@ def detect_faces(video_args, decoder, batch_size=32):
             fidx = fidx.item()
             for bbox in bboxes:
                 dets[fidx].append({'frame': fidx, 'bbox': (bbox[:-1]).tolist(), 'conf': bbox[-1]})
-
-        if batch_idx % 10 == 0:
-            processed = min((batch_idx + 1) * batch_size, num_frames)
-            print('%s-%05d/%05d' % (video_args.videoFilePath, processed, num_frames))
         # t0 = time.time()
 
-    sys.stderr.write('\n')
-    savePath = os.path.join(video_args.pyworkPath, 'faces.pckl')
-    with open(savePath, 'wb') as fil:
+    with open(face_detections_file, 'wb') as fil:
         pickle.dump(dets, fil)
+
     return dets
 
 def bb_intersection_over_union(boxA, boxB, evalCol = False):
