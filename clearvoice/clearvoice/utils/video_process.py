@@ -175,6 +175,10 @@ def main(video_args, args):
     # Smooth tracks and convert to x_center/y_center/size format
     allTracksSmooth = smooth_tracks(allTracks)
 
+    if Path(video_args.savePath + f"/left.wav").exists():
+        print("left.wav exists, so skipping AVSE")
+        return
+
     # Face clips cropping - returns tensors in memory
     t1 = time.time()
     vidTracks = crop_video(video_args, allTracksSmooth, decoder, full_audio)
